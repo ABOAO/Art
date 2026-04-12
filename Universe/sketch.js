@@ -15,7 +15,7 @@ const EARTH_POSITION = new THREE.Vector3(0, 0, 0);
 const SUN_POSITION = new THREE.Vector3(-34, 14, -26);
 const SUN_RADIUS = 5.4;
 const TRANSITION_DURATION = 1800;
-const VIEWPOINT_BODY_DEFS = [
+const LEGACY_VIEWPOINT_BODY_DEFS = [
   {
     name: "Adrian",
     label: "Adrian · 天倉五",
@@ -118,6 +118,156 @@ const VIEWPOINT_BODY_DEFS = [
       tiltY: 0.08
     }
   }
+];
+
+const CATALOG_BODY_NAMES = [
+  "Earth",
+  "Moon",
+  "Mars",
+  "Jupiter",
+  "Venus",
+  "Saturn",
+  "Europa",
+  "Titan",
+  "Enceladus",
+  "Mercury",
+  "Neptune",
+  "Uranus",
+  "Pluto",
+  "Ceres",
+  "Ganymede",
+  "Io",
+  "Callisto",
+  "Triton",
+  "Eris",
+  "Haumea",
+  "Makemake",
+  "PSR B1257+12 b",
+  "PSR B1257+12 c",
+  "PSR B1257+12 d",
+  "51 Pegasi b",
+  "Upsilon Andromedae b",
+  "Upsilon Andromedae c",
+  "Upsilon Andromedae d",
+  "70 Virginis b",
+  "47 UMa b",
+  "47 UMa c",
+  "Tau Boötis b",
+  "HD 209458 b",
+  "HD 189733 b",
+  "55 Cancri e",
+  "GJ 1214 b",
+  "GJ 436 b",
+  "HAT-P-11 b",
+  "HAT-P-26 b",
+  "HD 149026 b",
+  "WASP-12 b",
+  "WASP-17 b",
+  "WASP-18 b",
+  "WASP-39 b",
+  "WASP-43 b",
+  "WASP-76 b",
+  "WASP-107 b",
+  "WASP-121 b",
+  "Kepler-10 b",
+  "Kepler-20 e",
+  "Kepler-20 f",
+  "Kepler-22 b",
+  "Kepler-36 b",
+  "Kepler-36 c",
+  "Kepler-37 b",
+  "Kepler-62 e",
+  "Kepler-62 f",
+  "Kepler-69 c",
+  "Kepler-78 b",
+  "Kepler-186 f",
+  "Kepler-438 b",
+  "Kepler-442 b",
+  "Kepler-452 b",
+  "Proxima Centauri b",
+  "Proxima Centauri c",
+  "LHS 1140 b",
+  "LHS 1140 c",
+  "TOI-700 d",
+  "TOI-700 e",
+  "K2-18 b",
+  "Kepler-1649 c",
+  "Kepler-11 b",
+  "Kepler-11 c",
+  "Kepler-11 d",
+  "Kepler-11 e",
+  "Kepler-11 f",
+  "Kepler-11 g",
+  "Kepler-16 b",
+  "Kepler-90 i",
+  "Kepler-444 b",
+  "Kepler-444 c",
+  "Kepler-444 d",
+  "Kepler-444 e",
+  "Kepler-444 f",
+  "TRAPPIST-1 b",
+  "TRAPPIST-1 c",
+  "TRAPPIST-1 d",
+  "TRAPPIST-1 e",
+  "TRAPPIST-1 f",
+  "TRAPPIST-1 g",
+  "TRAPPIST-1 h",
+  "HR 8799 b",
+  "HR 8799 c",
+  "HR 8799 d",
+  "HR 8799 e",
+  "Beta Pictoris b",
+  "Beta Pictoris c",
+  "PDS 70 b",
+  "PDS 70 c",
+  "HIP 65426 b"
+];
+
+const TEXTURE_BY_NAME = {
+  Earth: "earthLike",
+  Moon: "moon",
+  Mars: "mars",
+  Jupiter: "jupiter",
+  Venus: "venus",
+  Saturn: "saturn",
+  Mercury: "mercury",
+  Neptune: "neptune",
+  Uranus: "uranus"
+};
+
+const CATALOG_VIEWPOINT_BODY_DEFS = CATALOG_BODY_NAMES.map((name, index) => {
+  const shell = Math.floor(index / 12);
+  const angle = index * 1.61803398875;
+  const radiusBand = 12 + shell * 7.25 + (index % 3) * 0.9;
+  const y = ((index % 9) - 4) * 2.15 + Math.sin(angle * 1.7) * 1.2;
+  const position = new THREE.Vector3(
+    Math.cos(angle) * radiusBand,
+    y,
+    Math.sin(angle) * (radiusBand + 2.4)
+  );
+
+  const baseRadius = name.includes("Jupiter") || name.includes("Saturn")
+    ? 1.14
+    : name.includes("Earth")
+      ? 0.92
+      : name.includes("Moon")
+        ? 0.52
+        : 0.6;
+
+  return {
+    name,
+    label: `${index + 1}. ${name}`,
+    radius: baseRadius + (index % 5) * 0.05,
+    position,
+    textureType: TEXTURE_BY_NAME[name] || "exoplanet",
+    rotationSpeed: 0.007 + (index % 6) * 0.0014,
+    cluster: shell > 2 ? "distant" : "local"
+  };
+});
+
+const VIEWPOINT_BODY_DEFS = [
+  ...LEGACY_VIEWPOINT_BODY_DEFS,
+  ...CATALOG_VIEWPOINT_BODY_DEFS
 ];
 const INTERGALACTIC_LANDMARK_DEFS = [
   {
@@ -404,6 +554,13 @@ function createBodyTexture(textureType) {
     case "moon":
       paintMoonTexture(context, width, height);
       break;
+    case "earthLike":
+      paintStripedTexture(context, width, height, {
+        base: "#4478c7",
+        stripes: ["#63a6ff", "#2f5ea6", "#5ca060", "#3f7e4f"],
+        softness: 0.44
+      });
+      break;
     case "mercury":
       paintMoonTexture(context, width, height, {
         base: "#8f8b88",
@@ -452,6 +609,13 @@ function createBodyTexture(textureType) {
         base: "#8fd9d8",
         stripes: ["#c7fbff", "#6dbec1", "#a5eeee"],
         softness: 0.22
+      });
+      break;
+    case "exoplanet":
+      paintStripedTexture(context, width, height, {
+        base: "#5d6587",
+        stripes: ["#8b95bc", "#343d5d", "#6e5a7f", "#a3a5bf"],
+        softness: 0.35
       });
       break;
     default:

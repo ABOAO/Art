@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Universe Explorer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg-deep: #01030a;
+        --bg-mid: #07101f;
+        --glass-border: rgba(255, 255, 255, 0.14);
+        --glass-fill: rgba(8, 13, 27, 0.42);
+        --text-primary: rgba(255, 255, 255, 0.96);
+        --text-secondary: rgba(230, 236, 255, 0.7);
+        --accent: #8ec5ff;
+        --accent-strong: #e9f5ff;
+        --shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 20% 20%, rgba(58, 104, 201, 0.14), transparent 36%),
+          radial-gradient(circle at 80% 18%, rgba(125, 154, 255, 0.1), transparent 28%),
+          radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.05), transparent 38%),
+          linear-gradient(180deg, var(--bg-mid) 0%, var(--bg-deep) 62%, #000000 100%);
+        font-family:
+          "SF Pro Display",
+          "Segoe UI",
+          Helvetica,
+          Arial,
+          sans-serif;
+      }
+
+      body {
+        position: relative;
+      }
+
+      #scene {
+        position: fixed;
+        inset: 0;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .hud {
+        position: fixed;
+        top: 24px;
+        left: 24px;
+        z-index: 3;
+        max-width: min(320px, calc(100vw - 48px));
+        padding: 16px 18px;
+        border: 1px solid var(--glass-border);
+        border-radius: 20px;
+        background: var(--glass-fill);
+        backdrop-filter: blur(18px);
+        box-shadow: var(--shadow);
+        pointer-events: none;
+      }
+
+      .hud-label {
+        display: inline-block;
+        margin-bottom: 10px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--accent);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      .hud p {
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+        line-height: 1.5;
+      }
+
+      .hud p + p {
+        margin-top: 10px;
+        font-size: 0.85rem;
+        color: rgba(230, 236, 255, 0.58);
+      }
+
+      .loading-label {
+        position: fixed;
+        left: 50%;
+        bottom: 30px;
+        z-index: 3;
+        padding: 10px 16px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 999px;
+        background: rgba(5, 8, 18, 0.5);
+        backdrop-filter: blur(12px);
+        color: rgba(255, 255, 255, 0.78);
+        font-size: 0.88rem;
+        transform: translateX(-50%);
+        transition:
+          opacity 0.7s ease,
+          transform 0.7s ease;
+      }
+
+      .loading-label.is-hidden {
+        opacity: 0;
+        transform: translateX(-50%) translateY(12px);
+      }
+
+      .control-cluster {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 4;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 10px;
+      }
+
+      .selector-menu {
+        min-width: 220px;
+        max-height: min(48vh, 420px);
+        overflow: auto;
+        padding: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 18px;
+        background: rgba(8, 12, 24, 0.86);
+        backdrop-filter: blur(20px);
+        box-shadow: 0 24px 54px rgba(0, 0, 0, 0.34);
+        opacity: 0;
+        transform: translateY(8px) scale(0.98);
+        pointer-events: none;
+        transition:
+          opacity 0.2s ease,
+          transform 0.2s ease;
+      }
+
+      .selector-menu.is-open {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        pointer-events: auto;
+      }
+
+      .selector-group {
+        margin-bottom: 10px;
+      }
+
+      .selector-group:last-child {
+        margin-bottom: 0;
+      }
+
+      .selector-title {
+        margin: 0 0 8px;
+        padding: 0 8px;
+        color: rgba(255, 255, 255, 0.42);
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .selector-item {
+        display: block;
+        width: 100%;
+        padding: 10px 12px;
+        border: 0;
+        border-radius: 14px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.9);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition:
+          background 0.18s ease,
+          transform 0.18s ease;
+      }
+
+      .selector-item:hover,
+      .selector-item:focus-visible {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateX(2px);
+        outline: none;
+      }
+
+      .selector-item small {
+        display: block;
+        margin-top: 4px;
+        color: rgba(255, 255, 255, 0.5);
+        font-size: 0.72rem;
+      }
+
+      .split-button {
+        display: flex;
+        align-items: stretch;
+        border-radius: 999px;
+        box-shadow:
+          0 20px 44px rgba(0, 0, 0, 0.3),
+          inset 0 1px 0 rgba(255, 255, 255, 0.15);
+        overflow: hidden;
+      }
+
+      .random-button,
+      .menu-button {
+        position: fixed;
+        position: static;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 112px;
+        min-height: 52px;
+        padding: 0 22px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.05)),
+          rgba(10, 15, 29, 0.5);
+        color: var(--text-primary);
+        font-size: 1rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        box-shadow:
+          0 20px 44px rgba(0, 0, 0, 0.3),
+          inset 0 1px 0 rgba(255, 255, 255, 0.15);
+        backdrop-filter: blur(18px);
+        cursor: pointer;
+        transition:
+          transform 0.24s ease,
+          box-shadow 0.24s ease,
+          background 0.24s ease;
+      }
+
+      .random-button {
+        border-right: 0;
+        border-radius: 999px 0 0 999px;
+      }
+
+      .menu-button {
+        min-width: 52px;
+        padding: 0;
+        border-radius: 0 999px 999px 0;
+      }
+
+      .menu-button svg {
+        width: 16px;
+        height: 16px;
+        transition: transform 0.2s ease;
+      }
+
+      .menu-button[aria-expanded="true"] svg {
+        transform: rotate(180deg);
+      }
+
+      .viewpoint-label {
+        position: fixed;
+        right: 24px;
+        bottom: 124px;
+        z-index: 3;
+        padding: 10px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 999px;
+        background: rgba(5, 8, 18, 0.42);
+        backdrop-filter: blur(14px);
+        color: rgba(255, 255, 255, 0.82);
+        font-size: 0.82rem;
+        letter-spacing: 0.04em;
+        pointer-events: none;
+      }
+
+      .random-button:hover,
+      .menu-button:hover {
+        transform: translateY(-1px) scale(1.01);
+        box-shadow:
+          0 24px 48px rgba(0, 0, 0, 0.36),
+          inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      }
+
+      .random-button:active,
+      .menu-button:active {
+        transform: translateY(1px) scale(0.99);
+      }
+
+      .random-button:focus-visible,
+      .menu-button:focus-visible {
+        outline: 2px solid rgba(142, 197, 255, 0.9);
+        outline-offset: 4px;
+      }
+
+      .transition-pulse {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        opacity: 0;
+        background:
+          radial-gradient(circle at center, rgba(150, 196, 255, 0.16), transparent 28%),
+          radial-gradient(circle at center, rgba(6, 9, 18, 0.26), rgba(6, 8, 16, 0.84) 75%);
+      }
+
+      .transition-pulse.is-animating {
+        animation: pulseFade 1.6s ease;
+      }
+
+      @keyframes pulseFade {
+        0% {
+          opacity: 0;
+        }
+
+        30% {
+          opacity: 0.42;
+        }
+
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .hud {
+          top: 16px;
+          left: 16px;
+          padding: 14px 16px;
+          max-width: min(260px, calc(100vw - 32px));
+        }
+
+        .hud p {
+          font-size: 0.88rem;
+        }
+
+        .control-cluster {
+          right: 16px;
+          bottom: 16px;
+        }
+
+        .random-button {
+          min-width: 96px;
+          min-height: 48px;
+          padding: 0 18px;
+          font-size: 0.95rem;
+        }
+
+        .menu-button {
+          min-width: 48px;
+          min-height: 48px;
+        }
+
+        .viewpoint-label {
+          right: 16px;
+          bottom: 112px;
+          font-size: 0.76rem;
+          max-width: calc(100vw - 32px);
+        }
+
+        .selector-menu {
+          min-width: min(240px, calc(100vw - 32px));
+        }
+
+        .loading-label {
+          bottom: 80px;
+          max-width: calc(100vw - 32px);
+          text-align: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="scene" aria-label="Interactive 3D space scene"></div>
+
+    <aside class="hud" aria-hidden="true">
+      <span class="hud-label">Deep Space</span>
+      <p>拖曳旋轉視角，滾輪縮放，像漂浮在整個宇宙中觀看地球。</p>
+      <p>場景現在包含太陽、天倉五、波江座 40A 與銀河外遠景，隨機視角會從更遠的世界回望地球。</p>
+    </aside>
+
+    <div id="loadingLabel" class="loading-label">載入宇宙場景中...</div>
+
+    <div id="viewpointLabel" class="viewpoint-label" aria-live="polite">
+      視角來源：初始化中
+    </div>
+
+    <div class="control-cluster">
+      <div
+        id="selectorMenu"
+        class="selector-menu"
+        role="menu"
+        aria-label="選擇視角來源"
+      ></div>
+
+      <div class="split-button">
+        <button id="randomButton" class="random-button" type="button">隨機</button>
+        <button
+          id="menuButton"
+          class="menu-button"
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded="false"
+          aria-controls="selectorMenu"
+          aria-label="展開星球選單"
+        >
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M7 10l5 5 5-5"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div id="transitionPulse" class="transition-pulse" aria-hidden="true"></div>
+
+    <script type="module" src="sketch.js"></script>
+  </body>
+</html>

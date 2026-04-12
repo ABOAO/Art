@@ -5,6 +5,8 @@
 let spiders = [];
 let allNodes = [];
 let paused = false;
+let audioReady = false;
+const SCALE_NOTES = [220, 246.94, 261.63, 293.66, 329.63, 392.0, 440.0];
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -26,12 +28,18 @@ function setupUI() {
     pauseBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       paused = !paused;
+      if (paused) {
+        for (const s of spiders) s.stopTone();
+      } else {
+        for (const s of spiders) s.resumeToneIfNeeded();
+      }
       pauseBtn.textContent = paused ? "繼續" : "暫停";
     });
   }
   if (clearBtn) {
     clearBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      for (const s of spiders) s.destroy();
       spiders = [];
       allNodes = [];
       paintBackground();
@@ -49,8 +57,15 @@ function windowResized() {
 function mousePressed(event) {
   // Ignore clicks on UI buttons.
   if (event && event.target && event.target.tagName === "BUTTON") return;
+  bootAudio();
   if (mouseX < 0 || mouseY < 0 || mouseX > width || mouseY > height) return;
   spiders.push(new Spider(mouseX, mouseY));
+}
+
+function bootAudio() {
+  if (audioReady) return;
+  userStartAudio();
+  audioReady = true;
 }
 
 function paintBackground() {
@@ -70,6 +85,10 @@ class Spider {
     drawNode(x, y, this.origin.size);
     this.current = null;
     this.restFrames = 0;
+    this.osc = new p5.Oscillator("triangle");
+    this.osc.amp(0);
+    this.osc.start();
+    this.playingTone = false;
   }
 
   replantOrigin() {
@@ -93,6 +112,7 @@ class Spider {
   }
 
   startNewThread() {
+    this.stopTone();
     const from = random(this.nodes);
 
     let to;
@@ -134,8 +154,11 @@ class Spider {
       steps,
       step: 0,
       prev: { x: from.x, y: from.y },
+      prevHeading: null,
+      turned: false,
       plantNode
     };
+    this.startTone();
   }
 
   advanceCurrent() {
@@ -149,6 +172,16 @@ class Spider {
     noFill();
     line(c.prev.x, c.prev.y, pt.x, pt.y);
 
+    const segHeading = atan2(pt.y - c.prev.y, pt.x - c.prev.x);
+    if (c.prevHeading !== null && !c.turned) {
+      const turnAngle = abs(angleDelta(segHeading, c.prevHeading));
+      if (turnAngle > radians(12)) {
+        c.turned = true;
+        this.stopTone();
+      }
+    }
+    c.prevHeading = segHeading;
+
     c.prev = pt;
 
     if (c.step >= c.steps) {
@@ -157,9 +190,34 @@ class Spider {
         allNodes.push(c.to);
         drawNode(c.to.x, c.to.y, c.to.size);
       }
+      this.stopTone();
       this.current = null;
       this.restFrames = floor(random(4, 14));
     }
+  }
+
+  startTone() {
+    if (!audioReady || this.playingTone) return;
+    this.osc.freq(random(SCALE_NOTES));
+    this.osc.amp(0.11, 0.03);
+    this.playingTone = true;
+  }
+
+  stopTone() {
+    if (!this.playingTone) return;
+    this.osc.amp(0, 0.05);
+    this.playingTone = false;
+  }
+
+  resumeToneIfNeeded() {
+    if (!this.current || this.current.turned) return;
+    this.startTone();
+  }
+
+  destroy() {
+    this.stopTone();
+    this.osc.stop();
+    if (this.osc.dispose) this.osc.dispose();
   }
 }
 
@@ -177,4 +235,8 @@ function drawNode(x, y, size) {
   circle(x, y, size + 1.8);
   fill(8, 10, 13, 250);
   circle(x, y, size);
+}
+
+function angleDelta(a, b) {
+  return atan2(sin(a - b), cos(a - b));
 }

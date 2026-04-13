@@ -2137,19 +2137,21 @@ function populateSelectorMenu() {
   const sortedBodies = [...viewpointBodies].sort(
     (left, right) => (left.orderIndex || Number.MAX_SAFE_INTEGER) - (right.orderIndex || Number.MAX_SAFE_INTEGER)
   );
+  const uniqueBodies = getUniqueMenuBodies(sortedBodies);
 
   const groups = [
     {
       title: "遠方系統",
-      bodies: sortedBodies.filter((body) => body.cluster === "distant")
+      bodies: uniqueBodies.filter((body) => body.cluster === "distant")
     },
     {
       title: "太陽系",
-      bodies: sortedBodies.filter((body) => body.cluster !== "distant")
+      bodies: uniqueBodies.filter((body) => body.cluster !== "distant")
     }
   ].filter((group) => group.bodies.length > 0);
 
   selectorMenu.innerHTML = "";
+  let menuIndex = 1;
 
   groups.forEach((group) => {
     const section = document.createElement("section");
@@ -2165,26 +2167,71 @@ function populateSelectorMenu() {
       item.type = "button";
       item.className = "selector-item";
       item.setAttribute("role", "menuitem");
-      item.innerHTML = `${buildSelectorItemLabel(body)}<small>${buildBodyMeta(body)}</small>`;
+      item.innerHTML = `${buildSelectorItemLabel(body, menuIndex)}<small>${buildBodyMeta(body)}</small>`;
       item.addEventListener("click", () => {
         moveCameraToBody(body, false);
       });
       section.appendChild(item);
+      menuIndex += 1;
     });
 
     selectorMenu.appendChild(section);
   });
 }
 
-function buildSelectorItemLabel(body) {
+function getCanonicalBodyName(body) {
+  return BODY_INFO_ALIASES[body.name] || body.name;
+}
+
+function getUniqueMenuBodies(bodies) {
+  const uniqueBodiesByCanonicalName = new Map();
+
+  bodies.forEach((body) => {
+    const canonicalName = getCanonicalBodyName(body);
+    const existingBody = uniqueBodiesByCanonicalName.get(canonicalName);
+
+    if (!existingBody || shouldPreferMenuBody(body, existingBody)) {
+      uniqueBodiesByCanonicalName.set(canonicalName, body);
+    }
+  });
+
+  return [...uniqueBodiesByCanonicalName.values()].sort(
+    (left, right) => (left.orderIndex || Number.MAX_SAFE_INTEGER) - (right.orderIndex || Number.MAX_SAFE_INTEGER)
+  );
+}
+
+function shouldPreferMenuBody(candidateBody, currentBody) {
+  const candidateIsLocalized = candidateBody.name === getCanonicalBodyName(candidateBody);
+  const currentIsLocalized = currentBody.name === getCanonicalBodyName(currentBody);
+
+  if (candidateIsLocalized !== currentIsLocalized) {
+    return candidateIsLocalized;
+  }
+
+  const candidateHasCustomLabel = Boolean(
+    candidateBody.label && candidateBody.label !== candidateBody.name
+  );
+  const currentHasCustomLabel = Boolean(
+    currentBody.label && currentBody.label !== currentBody.name
+  );
+
+  if (candidateHasCustomLabel !== currentHasCustomLabel) {
+    return candidateHasCustomLabel;
+  }
+
+  return (candidateBody.orderIndex || Number.MAX_SAFE_INTEGER)
+    < (currentBody.orderIndex || Number.MAX_SAFE_INTEGER);
+}
+
+function buildSelectorItemLabel(body, menuIndex) {
   const rawLabel = body.label || body.name;
   const cleanedLabel = rawLabel.replace(/^\d+\.\s*/, "");
 
-  if (!body.orderIndex) {
+  if (!menuIndex) {
     return cleanedLabel;
   }
 
-  return `${body.orderIndex}. ${cleanedLabel}`;
+  return `${menuIndex}. ${cleanedLabel}`;
 }
 
 function buildBodyMeta(body) {

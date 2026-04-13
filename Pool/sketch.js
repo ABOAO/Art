@@ -6,7 +6,9 @@ const ripples = [];
 const droplets = [];
 const specks = [];
 const lilyPads = [];
-const textureImage = new Image();
+const backReflections = [];
+const causticLines = [];
+const surfaceHighlights = [];
 
 const koiPalettes = [
   {
@@ -52,13 +54,10 @@ let dpr = 1;
 let time = 0;
 let lastTime = 0;
 let grainCanvas = null;
-let causticCanvas = null;
-let textureReady = false;
-
-textureImage.onload = () => {
-  textureReady = true;
-};
-textureImage.src = "pond-texture.jpg";
+let waterTextureCanvas = null;
+let backdropCanvas = null;
+let frontGlowCanvas = null;
+let vignetteCanvas = null;
 
 function rand(min, max) {
   return min + Math.random() * (max - min);
@@ -74,7 +73,23 @@ function lerpAngle(start, end, amount) {
 }
 
 function fishCount() {
-  return Math.round(clamp(width / 150, 9, 14));
+  return Math.round(clamp(width / 190, 6, 10));
+}
+
+function calculateRenderDpr() {
+  const deviceDpr = window.devicePixelRatio || 1;
+  const pixelBudget = 1_850_000;
+  const constrainedDpr = Math.sqrt(pixelBudget / Math.max(width * height, 1));
+  return clamp(Math.min(deviceDpr, constrainedDpr, 1.6), 1, 1.6);
+}
+
+function createScaledLayer() {
+  const layer = document.createElement("canvas");
+  layer.width = Math.max(1, Math.round(width * dpr));
+  layer.height = Math.max(1, Math.round(height * dpr));
+  const layerCtx = layer.getContext("2d");
+  layerCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { layer, layerCtx };
 }
 
 function createGrainTexture() {
@@ -118,19 +133,251 @@ function createGrainTexture() {
   grainCtx.restore();
 }
 
-function createCausticTexture() {
-  const cw = 256;
-  const ch = 256;
-  causticCanvas = document.createElement("canvas");
-  causticCanvas.width = cw;
-  causticCanvas.height = ch;
-  // caustic pattern is drawn dynamically in drawCaustics
+function createWaterTexture() {
+  const tw = 320;
+  const th = 320;
+  waterTextureCanvas = document.createElement("canvas");
+  waterTextureCanvas.width = tw;
+  waterTextureCanvas.height = th;
+
+  const waterCtx = waterTextureCanvas.getContext("2d");
+  const base = waterCtx.createLinearGradient(0, 0, tw, th);
+  base.addColorStop(0, "#204957");
+  base.addColorStop(0.45, "#173c49");
+  base.addColorStop(1, "#0d2530");
+  waterCtx.fillStyle = base;
+  waterCtx.fillRect(0, 0, tw, th);
+
+  waterCtx.globalCompositeOperation = "screen";
+  for (let i = 0; i < 14; i++) {
+    const glow = waterCtx.createRadialGradient(
+      rand(0, tw),
+      rand(0, th),
+      0,
+      rand(0, tw),
+      rand(0, th),
+      rand(54, 130)
+    );
+    glow.addColorStop(0, `rgba(220, 244, 244, ${rand(0.04, 0.12)})`);
+    glow.addColorStop(1, "rgba(220, 244, 244, 0)");
+    waterCtx.fillStyle = glow;
+    waterCtx.beginPath();
+    waterCtx.ellipse(
+      rand(0, tw),
+      rand(0, th),
+      rand(28, 80),
+      rand(16, 56),
+      rand(-0.8, 0.8),
+      0,
+      Math.PI * 2
+    );
+    waterCtx.fill();
+  }
+
+  waterCtx.globalCompositeOperation = "soft-light";
+  waterCtx.globalAlpha = 0.42;
+  waterCtx.drawImage(grainCanvas, 0, 0, tw, th);
+  waterCtx.globalAlpha = 0.18;
+  waterCtx.drawImage(grainCanvas, tw * 0.12, th * 0.08, tw * 0.74, th * 0.74);
+  waterCtx.globalAlpha = 1;
+  waterCtx.globalCompositeOperation = "source-over";
+}
+
+function paintBackdrop(targetCtx) {
+  const gradient = targetCtx.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, "#476f79");
+  gradient.addColorStop(0.2, "#2a5965");
+  gradient.addColorStop(0.52, "#153746");
+  gradient.addColorStop(1, "#091822");
+  targetCtx.fillStyle = gradient;
+  targetCtx.fillRect(0, 0, width, height);
+
+  const topGlow = targetCtx.createRadialGradient(
+    width * 0.28,
+    height * 0.12,
+    0,
+    width * 0.28,
+    height * 0.12,
+    width * 0.7
+  );
+  topGlow.addColorStop(0, "rgba(194, 225, 226, 0.18)");
+  topGlow.addColorStop(0.4, "rgba(122, 178, 184, 0.08)");
+  topGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  targetCtx.fillStyle = topGlow;
+  targetCtx.fillRect(0, 0, width, height);
+
+  targetCtx.save();
+  targetCtx.filter = "blur(42px)";
+  for (let i = 0; i < 6; i++) {
+    targetCtx.fillStyle = `rgba(0, 7, 10, ${rand(0.08, 0.16)})`;
+    targetCtx.beginPath();
+    targetCtx.ellipse(
+      width * rand(0.08, 0.95),
+      height * rand(0.68, 1.02),
+      rand(90, 220),
+      rand(24, 78),
+      rand(-0.5, 0.5),
+      0,
+      Math.PI * 2
+    );
+    targetCtx.fill();
+  }
+  targetCtx.restore();
+
+  const edgeWidth = Math.min(width, height) * 0.06;
+
+  const topEdge = targetCtx.createLinearGradient(0, 0, 0, edgeWidth * 1.5);
+  topEdge.addColorStop(0, "rgba(28, 22, 18, 0.85)");
+  topEdge.addColorStop(0.4, "rgba(45, 38, 30, 0.5)");
+  topEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
+  targetCtx.fillStyle = topEdge;
+  targetCtx.fillRect(0, 0, width, edgeWidth * 1.5);
+
+  const bottomEdge = targetCtx.createLinearGradient(0, height, 0, height - edgeWidth * 1.2);
+  bottomEdge.addColorStop(0, "rgba(5, 12, 15, 0.9)");
+  bottomEdge.addColorStop(0.5, "rgba(15, 22, 25, 0.4)");
+  bottomEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
+  targetCtx.fillStyle = bottomEdge;
+  targetCtx.fillRect(0, height - edgeWidth * 1.2, width, edgeWidth * 1.2);
+
+  const leftEdge = targetCtx.createLinearGradient(0, 0, edgeWidth * 1.2, 0);
+  leftEdge.addColorStop(0, "rgba(20, 16, 12, 0.75)");
+  leftEdge.addColorStop(0.5, "rgba(30, 25, 18, 0.3)");
+  leftEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
+  targetCtx.fillStyle = leftEdge;
+  targetCtx.fillRect(0, 0, edgeWidth * 1.2, height);
+
+  const rightEdge = targetCtx.createLinearGradient(width, 0, width - edgeWidth * 1.2, 0);
+  rightEdge.addColorStop(0, "rgba(20, 16, 12, 0.75)");
+  rightEdge.addColorStop(0.5, "rgba(30, 25, 18, 0.3)");
+  rightEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
+  targetCtx.fillStyle = rightEdge;
+  targetCtx.fillRect(width - edgeWidth * 1.2, 0, edgeWidth * 1.2, height);
+
+  targetCtx.save();
+  targetCtx.filter = "blur(3px)";
+  for (let i = 0; i < 24; i++) {
+    const side = i % 4;
+    let sx;
+    let sy;
+    if (side === 0) {
+      sx = rand(0, width);
+      sy = rand(0, edgeWidth * 0.6);
+    } else if (side === 1) {
+      sx = rand(0, width);
+      sy = height - rand(0, edgeWidth * 0.4);
+    } else if (side === 2) {
+      sx = rand(0, edgeWidth * 0.5);
+      sy = rand(0, height);
+    } else {
+      sx = width - rand(0, edgeWidth * 0.5);
+      sy = rand(0, height);
+    }
+
+    targetCtx.fillStyle = `rgba(${40 + rand(0, 30)}, ${32 + rand(0, 20)}, ${22 + rand(0, 15)}, ${rand(0.08, 0.2)})`;
+    targetCtx.beginPath();
+    targetCtx.ellipse(sx, sy, rand(12, 35), rand(8, 22), rand(-1, 1), 0, Math.PI * 2);
+    targetCtx.fill();
+  }
+  targetCtx.restore();
+}
+
+function paintFrontGlow(targetCtx) {
+  targetCtx.save();
+  targetCtx.filter = "blur(42px)";
+  for (let i = 0; i < 5; i++) {
+    targetCtx.fillStyle = `rgba(225, 239, 239, ${0.035 + i * 0.01})`;
+    targetCtx.beginPath();
+    targetCtx.ellipse(
+      width * rand(0.08, 0.92),
+      height * rand(0.12, 0.84),
+      rand(110, 280),
+      rand(34, 82),
+      rand(-0.35, 0.35),
+      0,
+      Math.PI * 2
+    );
+    targetCtx.fill();
+  }
+  targetCtx.restore();
+}
+
+function paintVignette(targetCtx) {
+  const vignette = targetCtx.createRadialGradient(
+    width * 0.5,
+    height * 0.36,
+    width * 0.14,
+    width * 0.5,
+    height * 0.5,
+    width * 0.8
+  );
+  vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
+  vignette.addColorStop(1, "rgba(0, 10, 15, 0.34)");
+  targetCtx.fillStyle = vignette;
+  targetCtx.fillRect(0, 0, width, height);
+}
+
+function createStaticLayers() {
+  let layerParts = createScaledLayer();
+  paintBackdrop(layerParts.layerCtx);
+  backdropCanvas = layerParts.layer;
+
+  layerParts = createScaledLayer();
+  paintFrontGlow(layerParts.layerCtx);
+  frontGlowCanvas = layerParts.layer;
+
+  layerParts = createScaledLayer();
+  paintVignette(layerParts.layerCtx);
+  vignetteCanvas = layerParts.layer;
+}
+
+function seedMotionFields() {
+  backReflections.length = 0;
+  causticLines.length = 0;
+  surfaceHighlights.length = 0;
+
+  for (let i = 0; i < 4; i++) {
+    backReflections.push({
+      x: 0.16 + i * 0.22 + rand(-0.03, 0.03),
+      y: 0.08 + i * 0.06 + rand(-0.015, 0.015),
+      rx: rand(0.12, 0.18),
+      ry: rand(0.05, 0.08),
+      alpha: rand(0.045, 0.08),
+      drift: rand(14, 24),
+      phase: rand(0, Math.PI * 2),
+      rotation: rand(-0.22, 0.22)
+    });
+  }
+
+  for (let i = 0; i < 5; i++) {
+    causticLines.push({
+      x: rand(0.08, 0.92),
+      y: rand(0.1, 0.66),
+      phase: rand(0, Math.PI * 2),
+      sway: rand(18, 32),
+      stepX: rand(46, 82),
+      stepY: rand(18, 30)
+    });
+  }
+
+  for (let i = 0; i < 4; i++) {
+    surfaceHighlights.push({
+      x: 0.16 + i * 0.2 + rand(-0.02, 0.02),
+      y: 0.13 + rand(-0.02, 0.02),
+      phase: rand(0, Math.PI * 2),
+      driftX: rand(24, 44),
+      driftY: rand(10, 22),
+      rx: rand(64, 108),
+      ry: rand(14, 26),
+      alpha: rand(0.012, 0.022)
+    });
+  }
 }
 
 function resize() {
   width = window.innerWidth;
   height = window.innerHeight;
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  dpr = calculateRenderDpr();
 
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
@@ -139,7 +386,9 @@ function resize() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   createGrainTexture();
-  createCausticTexture();
+  createWaterTexture();
+  seedMotionFields();
+  createStaticLayers();
   seedScene();
 }
 
@@ -154,13 +403,13 @@ function seedScene() {
     fish.push(new Koi(i));
   }
 
-  const speckCount = Math.round(clamp(width / 24, 26, 54));
+  const speckCount = Math.round(clamp(width / 34, 18, 34));
   for (let i = 0; i < speckCount; i++) {
     specks.push(new Speck());
   }
 
   // Create lily pads along edges
-  const padCount = Math.round(clamp(width / 300, 3, 7));
+  const padCount = Math.round(clamp(width / 380, 2, 5));
   for (let i = 0; i < padCount; i++) {
     lilyPads.push(new LilyPad());
   }
@@ -204,11 +453,10 @@ class LilyPad {
 
     // Shadow
     ctx.save();
-    ctx.filter = "blur(6px)";
     ctx.globalAlpha = 0.15;
     ctx.fillStyle = "#031510";
     ctx.beginPath();
-    ctx.arc(3, 4, this.radius + 2, 0, Math.PI * 2);
+    ctx.ellipse(3, 4, this.radius + 2, this.radius * 0.9, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
@@ -449,8 +697,8 @@ class Koi {
     this.tailPhase = rand(0, Math.PI * 2);
     this.pulse = rand(0, Math.PI * 2);
     this.wander = 0;
-    this.textureOffsetX = Math.random();
-    this.textureOffsetY = Math.random();
+    this.patternOffsetX = Math.random();
+    this.patternOffsetY = Math.random();
     this.marks = Array.from({ length: Math.floor(rand(2, 5)) }, () => ({
       x: rand(-0.18, 0.22),
       y: rand(-0.55, 0.55),
@@ -622,13 +870,12 @@ class Koi {
     for (let i = 0; i < this.trail.length; i++) {
       const t = this.trail[i];
       const progress = t.age / 1.2;
-      const alpha = 0.025 * (1 - progress) * this.depth;
+      const alpha = 0.038 * (1 - progress) * this.depth;
       if (alpha <= 0) continue;
       const size = 3 + (1 - progress) * this.bodyWidth * 0.2;
       ctx.fillStyle = `rgba(200, 230, 235, ${alpha})`;
-      ctx.filter = "blur(3px)";
       ctx.beginPath();
-      ctx.arc(t.x, t.y, size, 0, Math.PI * 2);
+      ctx.ellipse(t.x, t.y, size, size * 0.62, this.angle, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
@@ -720,15 +967,15 @@ class Koi {
     this.traceBody();
     ctx.clip();
 
-    if (textureReady) {
-      const sampleWidth = textureImage.width * 0.28;
-      const sampleHeight = textureImage.height * 0.34;
-      const sampleX = (textureImage.width - sampleWidth) * this.textureOffsetX;
-      const sampleY = (textureImage.height - sampleHeight) * this.textureOffsetY;
+    if (waterTextureCanvas) {
+      const sampleWidth = waterTextureCanvas.width * 0.58;
+      const sampleHeight = waterTextureCanvas.height * 0.58;
+      const sampleX = (waterTextureCanvas.width - sampleWidth) * this.patternOffsetX;
+      const sampleY = (waterTextureCanvas.height - sampleHeight) * this.patternOffsetY;
 
-      ctx.globalAlpha = 0.17;
+      ctx.globalAlpha = 0.14;
       ctx.drawImage(
-        textureImage,
+        waterTextureCanvas,
         sampleX,
         sampleY,
         sampleWidth,
@@ -740,9 +987,9 @@ class Koi {
       );
 
       ctx.globalCompositeOperation = "soft-light";
-      ctx.globalAlpha = 0.14;
+      ctx.globalAlpha = 0.1;
       ctx.drawImage(
-        textureImage,
+        waterTextureCanvas,
         sampleX * 0.75,
         sampleY * 0.85,
         sampleWidth,
@@ -839,7 +1086,7 @@ class Koi {
     const length = this.length;
     const halfWidth = this.bodyWidth;
     const tailSwing = Math.sin(this.tailPhase) * halfWidth * 0.48;
-    const blur = (1.2 - this.depth) * 1.2;
+    const blur = (1.2 - this.depth) * 0.75;
 
     // Wake trail
     this.drawWake();
@@ -850,7 +1097,7 @@ class Koi {
     ctx.rotate(this.angle);
     ctx.globalAlpha = 0.17 * this.depth;
     ctx.fillStyle = "rgba(2, 9, 14, 0.9)";
-    ctx.filter = `blur(${7 + this.depth * 4}px)`;
+    ctx.filter = `blur(${4 + this.depth * 2}px)`;
     this.traceTail(tailSwing);
     ctx.fill();
     this.traceBody();
@@ -945,133 +1192,50 @@ class Koi {
 /* ─── Drawing Functions ─── */
 
 function drawBackground() {
-  const gradient = ctx.createLinearGradient(0, 0, 0, height);
-  gradient.addColorStop(0, "#476f79");
-  gradient.addColorStop(0.2, "#2a5965");
-  gradient.addColorStop(0.52, "#153746");
-  gradient.addColorStop(1, "#091822");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, height);
-
-  const topGlow = ctx.createRadialGradient(width * 0.28, height * 0.12, 0, width * 0.28, height * 0.12, width * 0.7);
-  topGlow.addColorStop(0, "rgba(194, 225, 226, 0.18)");
-  topGlow.addColorStop(0.4, "rgba(122, 178, 184, 0.08)");
-  topGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = topGlow;
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.save();
-  ctx.filter = "blur(48px)";
-  for (let i = 0; i < 6; i++) {
-    ctx.fillStyle = `rgba(0, 7, 10, ${rand(0.08, 0.16)})`;
-    ctx.beginPath();
-    ctx.ellipse(
-      width * rand(0.08, 0.95),
-      height * rand(0.68, 1.02),
-      rand(90, 220),
-      rand(24, 78),
-      rand(-0.5, 0.5),
-      0,
-      Math.PI * 2
-    );
-    ctx.fill();
+  if (backdropCanvas) {
+    ctx.drawImage(backdropCanvas, 0, 0, width, height);
   }
-  ctx.restore();
-}
-
-function drawPondEdge() {
-  ctx.save();
-
-  // Dark edge shadow around the border
-  const edgeWidth = Math.min(width, height) * 0.06;
-
-  // Top edge - stone/rock border
-  const topEdge = ctx.createLinearGradient(0, 0, 0, edgeWidth * 1.5);
-  topEdge.addColorStop(0, "rgba(28, 22, 18, 0.85)");
-  topEdge.addColorStop(0.4, "rgba(45, 38, 30, 0.5)");
-  topEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = topEdge;
-  ctx.fillRect(0, 0, width, edgeWidth * 1.5);
-
-  // Bottom edge
-  const bottomEdge = ctx.createLinearGradient(0, height, 0, height - edgeWidth * 1.2);
-  bottomEdge.addColorStop(0, "rgba(5, 12, 15, 0.9)");
-  bottomEdge.addColorStop(0.5, "rgba(15, 22, 25, 0.4)");
-  bottomEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = bottomEdge;
-  ctx.fillRect(0, height - edgeWidth * 1.2, width, edgeWidth * 1.2);
-
-  // Left edge
-  const leftEdge = ctx.createLinearGradient(0, 0, edgeWidth * 1.2, 0);
-  leftEdge.addColorStop(0, "rgba(20, 16, 12, 0.75)");
-  leftEdge.addColorStop(0.5, "rgba(30, 25, 18, 0.3)");
-  leftEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = leftEdge;
-  ctx.fillRect(0, 0, edgeWidth * 1.2, height);
-
-  // Right edge
-  const rightEdge = ctx.createLinearGradient(width, 0, width - edgeWidth * 1.2, 0);
-  rightEdge.addColorStop(0, "rgba(20, 16, 12, 0.75)");
-  rightEdge.addColorStop(0.5, "rgba(30, 25, 18, 0.3)");
-  rightEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = rightEdge;
-  ctx.fillRect(width - edgeWidth * 1.2, 0, edgeWidth * 1.2, height);
-
-  // Subtle stone texture along edges
-  ctx.filter = "blur(3px)";
-  for (let i = 0; i < 24; i++) {
-    const side = i % 4;
-    let sx, sy;
-    if (side === 0) { sx = rand(0, width); sy = rand(0, edgeWidth * 0.6); }
-    else if (side === 1) { sx = rand(0, width); sy = height - rand(0, edgeWidth * 0.4); }
-    else if (side === 2) { sx = rand(0, edgeWidth * 0.5); sy = rand(0, height); }
-    else { sx = width - rand(0, edgeWidth * 0.5); sy = rand(0, height); }
-
-    ctx.fillStyle = `rgba(${40 + rand(0, 30)}, ${32 + rand(0, 20)}, ${22 + rand(0, 15)}, ${rand(0.08, 0.2)})`;
-    ctx.beginPath();
-    ctx.ellipse(sx, sy, rand(12, 35), rand(8, 22), rand(-1, 1), 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  ctx.restore();
 }
 
 function drawCaustics() {
   ctx.save();
   ctx.globalCompositeOperation = "screen";
-  ctx.filter = "blur(18px)";
+  ctx.filter = "blur(14px)";
 
-  const causticCount = 12;
+  const causticCount = 9;
   for (let i = 0; i < causticCount; i++) {
     const phase = time * (0.15 + i * 0.012) + i * 1.7;
-    const cx = width * (0.1 + (i / causticCount) * 0.8) + Math.sin(phase * 0.7) * 60;
-    const cy = height * (0.2 + (i % 4) * 0.15) + Math.cos(phase * 0.5 + i) * 40;
-    const rx = 40 + Math.sin(phase) * 20 + i * 5;
-    const ry = 20 + Math.cos(phase * 1.3) * 12 + i * 3;
-    const alpha = 0.018 + Math.sin(phase * 2) * 0.008;
+    const cx = width * (0.14 + (i / causticCount) * 0.72) + Math.sin(phase * 0.7) * 46;
+    const cy = height * (0.2 + (i % 3) * 0.16) + Math.cos(phase * 0.5 + i) * 30;
+    const rx = 34 + Math.sin(phase) * 16 + i * 4;
+    const ry = 16 + Math.cos(phase * 1.3) * 8 + i * 2;
+    const alpha = 0.015 + Math.sin(phase * 2) * 0.006;
 
     ctx.fillStyle = `rgba(180, 230, 220, ${alpha})`;
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, phase * 0.3, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.restore();
 
-  // Bright caustic network lines
-  ctx.lineWidth = 1.5;
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.filter = "blur(10px)";
+  ctx.lineWidth = 1.2;
   ctx.lineCap = "round";
-  for (let i = 0; i < 8; i++) {
-    const phase = time * 0.12 + i * 2.1;
+  for (const line of causticLines) {
+    const phase = time * 0.12 + line.phase;
     const alpha = 0.02 + Math.sin(phase * 1.5) * 0.01;
     ctx.strokeStyle = `rgba(200, 245, 235, ${alpha})`;
 
     ctx.beginPath();
-    const startX = width * rand(0.05, 0.95);
-    const startY = height * rand(0.1, 0.7);
+    const startX = width * line.x + Math.sin(phase * 0.8) * line.sway;
+    const startY = height * line.y + Math.cos(phase * 0.6) * line.sway * 0.35;
     ctx.moveTo(startX, startY);
     for (let j = 1; j <= 4; j++) {
       ctx.lineTo(
-        startX + Math.sin(phase + j * 1.5) * 80,
-        startY + j * 25 + Math.cos(phase * 0.8 + j) * 20
+        startX + Math.sin(phase + j * 1.5) * line.stepX,
+        startY + j * line.stepY + Math.cos(phase * 0.8 + j) * (line.stepY * 0.7)
       );
     }
     ctx.stroke();
@@ -1088,7 +1252,7 @@ function drawFlowBand(baseY, ampA, ampB, phase, slope, color, bandWidth, blur) {
   ctx.strokeStyle = color;
   ctx.beginPath();
 
-  for (let x = -120; x <= width + 120; x += 34) {
+  for (let x = -120; x <= width + 120; x += 42) {
     const y =
       baseY +
       Math.sin(x * 0.009 + phase) * ampA +
@@ -1107,55 +1271,56 @@ function drawFlowBand(baseY, ampA, ampB, phase, slope, color, bandWidth, blur) {
 }
 
 function drawBackWater() {
-  if (textureReady) {
+  if (waterTextureCanvas) {
     ctx.save();
     ctx.globalCompositeOperation = "soft-light";
-    ctx.globalAlpha = 0.12;
-    ctx.filter = "blur(34px) saturate(0.7)";
+    ctx.globalAlpha = 0.16;
     ctx.drawImage(
-      textureImage,
-      -width * 0.08 + Math.sin(time * 0.05) * 60,
-      -height * 0.1 + Math.cos(time * 0.04) * 26,
+      waterTextureCanvas,
+      -width * 0.1 + Math.sin(time * 0.05) * 36,
+      -height * 0.08 + Math.cos(time * 0.04) * 18,
       width * 1.2,
-      height * 1.24
+      height * 1.18
     );
     ctx.restore();
   }
 
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 4; i++) {
     drawFlowBand(
-      height * (0.12 + i * 0.11),
-      10 + i * 1.8,
-      7 + i,
-      time * (0.2 + i * 0.02) + i * 1.8,
+      height * (0.14 + i * 0.13),
+      8 + i * 1.7,
+      6 + i * 0.85,
+      time * (0.18 + i * 0.02) + i * 1.8,
       -0.018,
-      `rgba(205, 229, 230, ${0.04 + i * 0.006})`,
-      14 + i * 3,
-      12 + i * 2
+      `rgba(205, 229, 230, ${0.034 + i * 0.007})`,
+      12 + i * 3,
+      8 + i * 2
     );
   }
 
   ctx.save();
-  ctx.filter = "blur(28px)";
-  for (let i = 0; i < 5; i++) {
+  ctx.filter = "blur(20px)";
+  for (const reflectionSeed of backReflections) {
+    const cx = width * reflectionSeed.x + Math.sin(time * 0.14 + reflectionSeed.phase) * reflectionSeed.drift;
+    const cy = height * reflectionSeed.y + Math.cos(time * 0.1 + reflectionSeed.phase) * reflectionSeed.drift * 0.35;
     const reflection = ctx.createRadialGradient(
-      width * (0.18 + i * 0.18),
-      height * (0.1 + i * 0.06),
+      cx,
+      cy,
       0,
-      width * (0.18 + i * 0.18),
-      height * (0.1 + i * 0.06),
-      width * 0.14
+      cx,
+      cy,
+      width * reflectionSeed.rx
     );
-    reflection.addColorStop(0, "rgba(245, 252, 252, 0.08)");
+    reflection.addColorStop(0, `rgba(245, 252, 252, ${reflectionSeed.alpha})`);
     reflection.addColorStop(1, "rgba(245, 252, 252, 0)");
     ctx.fillStyle = reflection;
     ctx.beginPath();
     ctx.ellipse(
-      width * (0.18 + i * 0.18) + Math.sin(time * (0.14 + i * 0.03) + i) * 22,
-      height * (0.1 + i * 0.06),
-      width * 0.16,
-      height * 0.08,
-      rand(-0.2, 0.2),
+      cx,
+      cy,
+      width * reflectionSeed.rx,
+      height * reflectionSeed.ry,
+      reflectionSeed.rotation,
       0,
       Math.PI * 2
     );
@@ -1187,56 +1352,44 @@ function drawFrontWaterVeil() {
   ctx.fillStyle = tint;
   ctx.fillRect(0, 0, width, height);
 
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 5; i++) {
     drawFlowBand(
-      height * (0.16 + i * 0.09),
-      12 + i * 2.4,
-      8 + i * 1.5,
-      time * (0.24 + i * 0.025) + i * 1.2,
+      height * (0.18 + i * 0.11),
+      10 + i * 1.8,
+      7 + i,
+      time * (0.22 + i * 0.025) + i * 1.2,
       0.03,
-      `rgba(214, 233, 233, ${0.022 + i * 0.003})`,
-      16 + i * 4,
-      18 + i * 2
+      `rgba(214, 233, 233, ${0.018 + i * 0.004})`,
+      14 + i * 4,
+      12 + i * 2
     );
   }
 
-  if (textureReady) {
+  if (waterTextureCanvas) {
     ctx.globalCompositeOperation = "overlay";
-    ctx.globalAlpha = 0.1;
-    ctx.filter = "blur(46px) saturate(0.55)";
+    ctx.globalAlpha = 0.08;
     ctx.drawImage(
-      textureImage,
-      -width * 0.04 - Math.cos(time * 0.03) * 40,
-      -height * 0.06 + Math.sin(time * 0.025) * 28,
-      width * 1.1,
-      height * 1.12
+      waterTextureCanvas,
+      -width * 0.05 - Math.cos(time * 0.03) * 24,
+      -height * 0.05 + Math.sin(time * 0.025) * 14,
+      width * 1.08,
+      height * 1.08
     );
   }
 
-  ctx.filter = "blur(42px)";
-  for (let i = 0; i < 6; i++) {
-    const alpha = 0.035 + i * 0.008;
-    ctx.fillStyle = `rgba(225, 239, 239, ${alpha})`;
-    ctx.beginPath();
-    ctx.ellipse(
-      width * rand(0.04, 0.96),
-      height * rand(0.08, 0.88),
-      rand(120, 320),
-      rand(36, 92),
-      rand(-0.4, 0.4),
-      0,
-      Math.PI * 2
-    );
-    ctx.fill();
+  if (frontGlowCanvas) {
+    ctx.globalCompositeOperation = "screen";
+    ctx.globalAlpha = 0.28;
+    ctx.drawImage(frontGlowCanvas, 0, 0, width, height);
   }
 
   ctx.filter = "none";
   ctx.globalCompositeOperation = "soft-light";
-  ctx.globalAlpha = 0.36;
+  ctx.globalAlpha = 0.28;
   ctx.drawImage(grainCanvas, 0, 0, width, height);
 
   ctx.globalCompositeOperation = "overlay";
-  ctx.globalAlpha = 0.18;
+  ctx.globalAlpha = 0.12;
   ctx.drawImage(grainCanvas, 0, 0, width, height);
 
   ctx.restore();
@@ -1253,35 +1406,33 @@ function drawRipplesAndDrops() {
 }
 
 function drawVignette() {
-  const vignette = ctx.createRadialGradient(
-    width * 0.5,
-    height * 0.36,
-    width * 0.14,
-    width * 0.5,
-    height * 0.5,
-    width * 0.8
-  );
-  vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
-  vignette.addColorStop(1, "rgba(0, 10, 15, 0.34)");
-  ctx.fillStyle = vignette;
-  ctx.fillRect(0, 0, width, height);
+  if (vignetteCanvas) {
+    ctx.drawImage(vignetteCanvas, 0, 0, width, height);
+  }
 }
 
 function drawSurfaceDistortion() {
-  // Subtle animated water surface highlights
   ctx.save();
   ctx.globalCompositeOperation = "screen";
-  ctx.filter = "blur(24px)";
+  ctx.filter = "blur(20px)";
 
-  for (let i = 0; i < 5; i++) {
-    const phase = time * 0.18 + i * 1.4;
-    const cx = width * (0.15 + i * 0.18) + Math.sin(phase) * 50;
-    const cy = height * 0.15 + Math.cos(phase * 0.7 + i) * 30;
-    const alpha = 0.015 + Math.sin(phase * 1.2) * 0.008;
+  for (const highlight of surfaceHighlights) {
+    const phase = time * 0.18 + highlight.phase;
+    const cx = width * highlight.x + Math.sin(phase) * highlight.driftX;
+    const cy = height * highlight.y + Math.cos(phase * 0.7) * highlight.driftY;
+    const alpha = highlight.alpha + Math.sin(phase * 1.2) * 0.006;
 
     ctx.fillStyle = `rgba(220, 245, 250, ${alpha})`;
     ctx.beginPath();
-    ctx.ellipse(cx, cy, 80 + Math.sin(phase * 0.5) * 30, 20 + Math.sin(phase * 0.8) * 8, phase * 0.15, 0, Math.PI * 2);
+    ctx.ellipse(
+      cx,
+      cy,
+      highlight.rx + Math.sin(phase * 0.5) * 18,
+      highlight.ry + Math.sin(phase * 0.8) * 5,
+      phase * 0.15,
+      0,
+      Math.PI * 2
+    );
     ctx.fill();
   }
 
@@ -1290,7 +1441,7 @@ function drawSurfaceDistortion() {
 
 function addRipple(x, y) {
   ripples.push(new Ripple(x, y));
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 7; i++) {
     droplets.push(new Droplet(x, y));
   }
 
@@ -1332,7 +1483,6 @@ function update(dt) {
 function render() {
   ctx.clearRect(0, 0, width, height);
   drawBackground();
-  drawPondEdge();
   drawBackWater();
   drawCaustics();
   drawSpecks();

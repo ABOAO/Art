@@ -705,7 +705,7 @@ const CATALOG_VIEWPOINT_BODY_DEFS = CATALOG_BODY_NAMES.map((name, index) => {
 
   return {
     name,
-    label: `${index + 1}. ${name}`,
+    label: name,
     radius: baseRadius + (index % 5) * 0.02,
     position,
     textureType: TEXTURE_BY_NAME[name] || "exoplanet",
@@ -788,6 +788,7 @@ function init() {
   setupStars();
   setupNebulaSprites();
   setupIntergalacticLandmarks();
+  assignViewpointOrder();
   populateSelectorMenu();
   setupControls();
   setupEvents();
@@ -795,6 +796,16 @@ function init() {
   randomizeCamera(true);
   loadEarthTextures();
   animate();
+}
+
+function assignViewpointOrder() {
+  const orderedBodies = [...viewpointBodies].sort(
+    (left, right) => left.position.distanceTo(EARTH_POSITION) - right.position.distanceTo(EARTH_POSITION)
+  );
+
+  orderedBodies.forEach((body, index) => {
+    body.orderIndex = index + 1;
+  });
 }
 
 function setupScene() {
@@ -2123,14 +2134,18 @@ function updateHud(body) {
 }
 
 function populateSelectorMenu() {
+  const sortedBodies = [...viewpointBodies].sort(
+    (left, right) => (left.orderIndex || Number.MAX_SAFE_INTEGER) - (right.orderIndex || Number.MAX_SAFE_INTEGER)
+  );
+
   const groups = [
     {
       title: "遠方系統",
-      bodies: viewpointBodies.filter((body) => body.cluster === "distant")
+      bodies: sortedBodies.filter((body) => body.cluster === "distant")
     },
     {
       title: "太陽系",
-      bodies: viewpointBodies.filter((body) => body.cluster !== "distant")
+      bodies: sortedBodies.filter((body) => body.cluster !== "distant")
     }
   ].filter((group) => group.bodies.length > 0);
 
@@ -2150,7 +2165,7 @@ function populateSelectorMenu() {
       item.type = "button";
       item.className = "selector-item";
       item.setAttribute("role", "menuitem");
-      item.innerHTML = `${body.label || body.name}<small>${buildBodyMeta(body)}</small>`;
+      item.innerHTML = `${buildSelectorItemLabel(body)}<small>${buildBodyMeta(body)}</small>`;
       item.addEventListener("click", () => {
         moveCameraToBody(body, false);
       });
@@ -2159,6 +2174,17 @@ function populateSelectorMenu() {
 
     selectorMenu.appendChild(section);
   });
+}
+
+function buildSelectorItemLabel(body) {
+  const rawLabel = body.label || body.name;
+  const cleanedLabel = rawLabel.replace(/^\d+\.\s*/, "");
+
+  if (!body.orderIndex) {
+    return cleanedLabel;
+  }
+
+  return `${body.orderIndex}. ${cleanedLabel}`;
 }
 
 function buildBodyMeta(body) {

@@ -5,6 +5,7 @@ const fish = [];
 const ripples = [];
 const droplets = [];
 const specks = [];
+const lilyPads = [];
 const textureImage = new Image();
 
 const koiPalettes = [
@@ -51,6 +52,7 @@ let dpr = 1;
 let time = 0;
 let lastTime = 0;
 let grainCanvas = null;
+let causticCanvas = null;
 let textureReady = false;
 
 textureImage.onload = () => {
@@ -116,6 +118,15 @@ function createGrainTexture() {
   grainCtx.restore();
 }
 
+function createCausticTexture() {
+  const cw = 256;
+  const ch = 256;
+  causticCanvas = document.createElement("canvas");
+  causticCanvas.width = cw;
+  causticCanvas.height = ch;
+  // caustic pattern is drawn dynamically in drawCaustics
+}
+
 function resize() {
   width = window.innerWidth;
   height = window.innerHeight;
@@ -128,6 +139,7 @@ function resize() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   createGrainTexture();
+  createCausticTexture();
   seedScene();
 }
 
@@ -136,6 +148,7 @@ function seedScene() {
   specks.length = 0;
   ripples.length = 0;
   droplets.length = 0;
+  lilyPads.length = 0;
 
   for (let i = 0; i < fishCount(); i++) {
     fish.push(new Koi(i));
@@ -145,8 +158,134 @@ function seedScene() {
   for (let i = 0; i < speckCount; i++) {
     specks.push(new Speck());
   }
+
+  // Create lily pads along edges
+  const padCount = Math.round(clamp(width / 300, 3, 7));
+  for (let i = 0; i < padCount; i++) {
+    lilyPads.push(new LilyPad());
+  }
 }
 
+/* ─── Lily Pads ─── */
+class LilyPad {
+  constructor() {
+    // Place near edges
+    const side = Math.random();
+    if (side < 0.3) {
+      this.x = rand(30, width * 0.18);
+      this.y = rand(height * 0.15, height * 0.6);
+    } else if (side < 0.6) {
+      this.x = rand(width * 0.82, width - 30);
+      this.y = rand(height * 0.15, height * 0.6);
+    } else {
+      this.x = rand(width * 0.15, width * 0.85);
+      this.y = rand(height * 0.06, height * 0.22);
+    }
+    this.radius = rand(22, 42);
+    this.rotation = rand(0, Math.PI * 2);
+    this.notchAngle = rand(0, Math.PI * 2);
+    this.notchWidth = rand(0.3, 0.55);
+    this.phase = rand(0, Math.PI * 2);
+    this.driftSpeed = rand(0.3, 0.8);
+    this.hasFlower = Math.random() > 0.65;
+    this.flowerPhase = rand(0, Math.PI * 2);
+  }
+
+  update(dt) {
+    this.x += Math.sin(time * 0.15 + this.phase) * this.driftSpeed * dt;
+    this.y += Math.cos(time * 0.12 + this.phase * 1.3) * this.driftSpeed * 0.5 * dt;
+    this.rotation += Math.sin(time * 0.2 + this.phase) * 0.003;
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.rotation);
+
+    // Shadow
+    ctx.save();
+    ctx.filter = "blur(6px)";
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = "#031510";
+    ctx.beginPath();
+    ctx.arc(3, 4, this.radius + 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Pad body
+    const padGrad = ctx.createRadialGradient(
+      -this.radius * 0.2, -this.radius * 0.15, 0,
+      0, 0, this.radius
+    );
+    padGrad.addColorStop(0, "#4a7a3a");
+    padGrad.addColorStop(0.5, "#2d5c28");
+    padGrad.addColorStop(1, "#1a4420");
+    ctx.fillStyle = padGrad;
+
+    ctx.beginPath();
+    const notchStart = this.notchAngle - this.notchWidth * 0.5;
+    const notchEnd = this.notchAngle + this.notchWidth * 0.5;
+    ctx.arc(0, 0, this.radius, notchEnd, notchStart + Math.PI * 2);
+    ctx.lineTo(0, 0);
+    ctx.closePath();
+    ctx.fill();
+
+    // Veins
+    ctx.strokeStyle = "rgba(30, 70, 25, 0.35)";
+    ctx.lineWidth = 0.8;
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI * 2 / 6) * i + this.notchAngle + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(
+        Math.cos(angle) * this.radius * 0.85,
+        Math.sin(angle) * this.radius * 0.85
+      );
+      ctx.stroke();
+    }
+
+    // Highlight
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = "#8fbb6a";
+    ctx.beginPath();
+    ctx.ellipse(-this.radius * 0.25, -this.radius * 0.2, this.radius * 0.35, this.radius * 0.2, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Flower
+    if (this.hasFlower) {
+      const fx = this.radius * 0.3;
+      const fy = -this.radius * 0.2;
+      const petalSize = this.radius * 0.28;
+      const openAmount = 0.85 + Math.sin(time * 0.3 + this.flowerPhase) * 0.15;
+
+      ctx.globalAlpha = 0.9;
+      for (let p = 0; p < 6; p++) {
+        const pa = (Math.PI * 2 / 6) * p + time * 0.02;
+        ctx.fillStyle = p % 2 === 0 ? "#f5e0e8" : "#f0c8d6";
+        ctx.beginPath();
+        ctx.ellipse(
+          fx + Math.cos(pa) * petalSize * 0.4 * openAmount,
+          fy + Math.sin(pa) * petalSize * 0.4 * openAmount,
+          petalSize * 0.35,
+          petalSize * 0.2,
+          pa,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      }
+      // Center
+      ctx.fillStyle = "#e8c840";
+      ctx.beginPath();
+      ctx.arc(fx, fy, petalSize * 0.15, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+}
+
+/* ─── Specks (floating particles) ─── */
 class Speck {
   constructor() {
     this.reset(true);
@@ -190,12 +329,13 @@ class Speck {
   }
 }
 
+/* ─── Ripple ─── */
 class Ripple {
   constructor(x, y) {
     this.x = x;
     this.y = y;
     this.age = 0;
-    this.life = 2.4;
+    this.life = 2.8;
     this.radius = 8;
     this.phase = rand(0, Math.PI * 2);
   }
@@ -209,27 +349,35 @@ class Ripple {
 
   draw() {
     const progress = this.age / this.life;
-    const baseAlpha = Math.max(0, 0.18 - progress * 0.12);
+    const baseAlpha = Math.max(0, 0.22 - progress * 0.14);
 
     ctx.save();
     ctx.lineCap = "round";
-    ctx.filter = "blur(0.6px)";
 
-    for (let i = 0; i < 3; i++) {
-      const wave = progress - i * 0.11;
+    for (let i = 0; i < 4; i++) {
+      const wave = progress - i * 0.09;
       if (wave <= 0) continue;
 
       const radius = 10 + Math.pow(wave, 1.25) * Math.min(width, height) * 0.28;
-      const alpha = baseAlpha - i * 0.038;
+      const alpha = baseAlpha - i * 0.035;
       if (alpha <= 0) continue;
 
-      ctx.strokeStyle = `rgba(232, 244, 244, ${alpha})`;
-      ctx.lineWidth = Math.max(0.9, 2.2 - i * 0.45 - progress * 0.75);
-
+      // Light refraction highlight on ripple crest
+      ctx.strokeStyle = `rgba(240, 252, 252, ${alpha * 0.8})`;
+      ctx.lineWidth = Math.max(0.6, 2.6 - i * 0.4 - progress * 0.8);
       ctx.beginPath();
       ctx.arc(this.x, this.y, radius, this.phase + i * 0.7, this.phase + i * 0.7 + Math.PI * 1.35);
       ctx.stroke();
 
+      // Darker trough below the crest
+      ctx.strokeStyle = `rgba(10, 40, 50, ${alpha * 0.3})`;
+      ctx.lineWidth = Math.max(0.4, 1.8 - i * 0.3 - progress * 0.6);
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, radius + 2.5, this.phase + i * 0.7 + 0.15, this.phase + i * 0.7 + Math.PI * 1.2);
+      ctx.stroke();
+
+      ctx.strokeStyle = `rgba(232, 244, 244, ${alpha * 0.6})`;
+      ctx.lineWidth = Math.max(0.5, 1.6 - i * 0.35 - progress * 0.6);
       ctx.beginPath();
       ctx.arc(
         this.x,
@@ -241,8 +389,9 @@ class Ripple {
       ctx.stroke();
     }
 
+    // Central glow
     ctx.filter = "blur(10px)";
-    ctx.fillStyle = `rgba(190, 223, 224, ${0.06 * (1 - progress)})`;
+    ctx.fillStyle = `rgba(190, 223, 224, ${0.08 * (1 - progress)})`;
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius * 0.45, 0, Math.PI * 2);
     ctx.fill();
@@ -250,6 +399,7 @@ class Ripple {
   }
 }
 
+/* ─── Droplet ─── */
 class Droplet {
   constructor(x, y) {
     const angle = rand(-Math.PI * 0.92, -Math.PI * 0.08);
@@ -284,6 +434,7 @@ class Droplet {
   }
 }
 
+/* ─── Koi ─── */
 class Koi {
   constructor(index) {
     this.palette = koiPalettes[index % koiPalettes.length];
@@ -308,6 +459,9 @@ class Koi {
       rotation: rand(-1.2, 1.2),
       alternate: Math.random() > 0.5
     }));
+    // Wake trail positions
+    this.trail = [];
+    this.trailTimer = 0;
     this.setTarget(true);
   }
 
@@ -388,29 +542,51 @@ class Koi {
     this.x = clamp(this.x, 30, width - 30);
     this.y = clamp(this.y, height * 0.5, height - 20);
     this.tailPhase += dt * (2.8 + this.speed * 0.08);
+
+    // Update wake trail
+    this.trailTimer += dt;
+    if (this.trailTimer > 0.06) {
+      this.trailTimer = 0;
+      this.trail.push({ x: this.x, y: this.y, age: 0 });
+      if (this.trail.length > 14) this.trail.shift();
+    }
+    for (let i = this.trail.length - 1; i >= 0; i--) {
+      this.trail[i].age += dt;
+      if (this.trail[i].age > 1.2) {
+        this.trail.splice(i, 1);
+      }
+    }
+  }
+
+  // Get undulation offset at a given body position t (0 = head, 1 = tail)
+  undulationOffset(t) {
+    const amp = this.bodyWidth * 0.12 * t * t; // increases toward tail
+    return Math.sin(this.tailPhase - t * 2.8) * amp;
   }
 
   traceBody() {
     const length = this.length;
     const halfWidth = this.bodyWidth;
+    const und1 = this.undulationOffset(0.3);
+    const und2 = this.undulationOffset(0.6);
 
     ctx.beginPath();
     ctx.moveTo(length * 0.5, 0);
     ctx.bezierCurveTo(
       length * 0.28,
-      -halfWidth * 0.78,
+      -halfWidth * 0.78 + und1 * 0.3,
       -length * 0.02,
-      -halfWidth * 0.94,
+      -halfWidth * 0.94 + und2 * 0.5,
       -length * 0.42,
-      -halfWidth * 0.36
+      -halfWidth * 0.36 + und2
     );
-    ctx.quadraticCurveTo(-length * 0.57, -halfWidth * 0.16, -length * 0.6, 0);
-    ctx.quadraticCurveTo(-length * 0.57, halfWidth * 0.16, -length * 0.42, halfWidth * 0.36);
+    ctx.quadraticCurveTo(-length * 0.57, -halfWidth * 0.16 + und2, -length * 0.6, und2);
+    ctx.quadraticCurveTo(-length * 0.57, halfWidth * 0.16 + und2, -length * 0.42, halfWidth * 0.36 + und2);
     ctx.bezierCurveTo(
       -length * 0.02,
-      halfWidth * 0.94,
+      halfWidth * 0.94 + und2 * 0.5,
       length * 0.28,
-      halfWidth * 0.78,
+      halfWidth * 0.78 + und1 * 0.3,
       length * 0.5,
       0
     );
@@ -420,22 +596,42 @@ class Koi {
   traceTail(tailSwing) {
     const length = this.length;
     const halfWidth = this.bodyWidth;
+    const und = this.undulationOffset(0.8);
 
     ctx.beginPath();
-    ctx.moveTo(-length * 0.54, 0);
+    ctx.moveTo(-length * 0.54, und * 0.6);
     ctx.quadraticCurveTo(
       -length * 0.9,
-      -halfWidth * 0.74 + tailSwing,
+      -halfWidth * 0.74 + tailSwing + und,
       -length * 1.02,
-      tailSwing * 0.2
+      tailSwing * 0.2 + und * 1.2
     );
     ctx.quadraticCurveTo(
       -length * 0.9,
-      halfWidth * 0.74 + tailSwing,
+      halfWidth * 0.74 + tailSwing + und,
       -length * 0.54,
-      0
+      und * 0.6
     );
     ctx.closePath();
+  }
+
+  drawWake() {
+    if (this.trail.length < 3) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (let i = 0; i < this.trail.length; i++) {
+      const t = this.trail[i];
+      const progress = t.age / 1.2;
+      const alpha = 0.025 * (1 - progress) * this.depth;
+      if (alpha <= 0) continue;
+      const size = 3 + (1 - progress) * this.bodyWidth * 0.2;
+      ctx.fillStyle = `rgba(200, 230, 235, ${alpha})`;
+      ctx.filter = "blur(3px)";
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   drawFins(tailSwing) {
@@ -446,6 +642,7 @@ class Koi {
     ctx.save();
     ctx.fillStyle = this.palette.fin;
 
+    // Left pectoral fin
     ctx.beginPath();
     ctx.moveTo(-length * 0.1, -halfWidth * 0.12);
     ctx.quadraticCurveTo(
@@ -462,6 +659,7 @@ class Koi {
     );
     ctx.fill();
 
+    // Right pectoral fin
     ctx.beginPath();
     ctx.moveTo(-length * 0.08, halfWidth * 0.14);
     ctx.quadraticCurveTo(
@@ -478,6 +676,7 @@ class Koi {
     );
     ctx.fill();
 
+    // Tail with gradient
     const tailGradient = ctx.createLinearGradient(-length, 0, -length * 0.46, 0);
     tailGradient.addColorStop(0, "rgba(255, 255, 255, 0.06)");
     tailGradient.addColorStop(1, this.palette.fin);
@@ -485,6 +684,26 @@ class Koi {
     this.traceTail(tailSwing);
     ctx.fill();
 
+    // Dorsal fin (small)
+    const dorsalDrift = Math.sin(this.tailPhase * 0.8) * halfWidth * 0.06;
+    ctx.fillStyle = this.palette.fin;
+    ctx.beginPath();
+    ctx.moveTo(-length * 0.15, -halfWidth * 0.3);
+    ctx.quadraticCurveTo(
+      -length * 0.25,
+      -halfWidth * 0.7 + dorsalDrift,
+      -length * 0.35,
+      -halfWidth * 0.28
+    );
+    ctx.quadraticCurveTo(
+      -length * 0.28,
+      -halfWidth * 0.18,
+      -length * 0.15,
+      -halfWidth * 0.3
+    );
+    ctx.fill();
+
+    // Small front fin
     ctx.beginPath();
     ctx.moveTo(length * 0.03, -halfWidth * 0.08);
     ctx.quadraticCurveTo(length * 0.1, -halfWidth * 0.86, length * 0.18, -halfWidth * 0.12);
@@ -552,6 +771,7 @@ class Koi {
       ctx.restore();
     }
 
+    // Scale pattern
     ctx.strokeStyle = "rgba(255, 255, 255, 0.09)";
     ctx.lineWidth = 0.7;
     for (let x = -length * 0.34; x <= length * 0.18; x += length * 0.085) {
@@ -562,6 +782,7 @@ class Koi {
       }
     }
 
+    // Body highlight
     const bodyHighlight = ctx.createLinearGradient(
       -length * 0.12,
       -halfWidth * 0.78,
@@ -578,12 +799,52 @@ class Koi {
     ctx.restore();
   }
 
+  drawBarbels() {
+    const length = this.length;
+    const halfWidth = this.bodyWidth;
+    const sway = Math.sin(this.tailPhase * 0.6 + 1.2) * 3;
+
+    ctx.save();
+    ctx.strokeStyle = `rgba(180, 160, 130, ${0.35 + this.depth * 0.15})`;
+    ctx.lineWidth = 0.8;
+    ctx.lineCap = "round";
+
+    // Two pairs of barbels
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(length * 0.46, side * halfWidth * 0.06);
+      ctx.quadraticCurveTo(
+        length * 0.56,
+        side * halfWidth * 0.18 + sway,
+        length * 0.58,
+        side * halfWidth * 0.22 + sway * 1.3
+      );
+      ctx.stroke();
+
+      // Shorter inner pair
+      ctx.beginPath();
+      ctx.moveTo(length * 0.48, side * halfWidth * 0.02);
+      ctx.quadraticCurveTo(
+        length * 0.53,
+        side * halfWidth * 0.08 + sway * 0.6,
+        length * 0.54,
+        side * halfWidth * 0.12 + sway * 0.8
+      );
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   draw() {
     const length = this.length;
     const halfWidth = this.bodyWidth;
     const tailSwing = Math.sin(this.tailPhase) * halfWidth * 0.48;
     const blur = (1.2 - this.depth) * 1.2;
 
+    // Wake trail
+    this.drawWake();
+
+    // Shadow
     ctx.save();
     ctx.translate(this.x + 12 * this.depth, this.y + 16 * this.depth);
     ctx.rotate(this.angle);
@@ -596,6 +857,7 @@ class Koi {
     ctx.fill();
     ctx.restore();
 
+    // Body
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle);
@@ -622,6 +884,7 @@ class Koi {
 
     this.drawPattern();
 
+    // Mouth line
     ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -629,6 +892,7 @@ class Koi {
     ctx.quadraticCurveTo(length * 0.3, 0, length * 0.36, halfWidth * 0.03);
     ctx.stroke();
 
+    // Gill line
     ctx.strokeStyle = "rgba(71, 45, 28, 0.3)";
     ctx.lineWidth = 1.1;
     ctx.beginPath();
@@ -636,15 +900,49 @@ class Koi {
     ctx.quadraticCurveTo(length * 0.16, 0, length * 0.08, halfWidth * 0.42);
     ctx.stroke();
 
-    ctx.fillStyle = "rgba(20, 12, 9, 0.84)";
+    // Barbels
+    this.drawBarbels();
+
+    // Eye - more realistic with iris and specular
+    const eyeX = length * 0.34;
+    const eyeY = -halfWidth * 0.1;
+    const eyeR = halfWidth * 0.09;
+
+    // Eye socket shadow
+    ctx.fillStyle = "rgba(40, 25, 15, 0.25)";
     ctx.beginPath();
-    ctx.arc(length * 0.34, -halfWidth * 0.1, halfWidth * 0.08, 0, Math.PI * 2);
+    ctx.arc(eyeX, eyeY, eyeR * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Iris
+    const irisGrad = ctx.createRadialGradient(eyeX, eyeY, 0, eyeX, eyeY, eyeR);
+    irisGrad.addColorStop(0, "#1a0e08");
+    irisGrad.addColorStop(0.6, "#2c1810");
+    irisGrad.addColorStop(0.85, "#44281a");
+    irisGrad.addColorStop(1, "#1a0e08");
+    ctx.fillStyle = irisGrad;
+    ctx.beginPath();
+    ctx.arc(eyeX, eyeY, eyeR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Pupil
+    ctx.fillStyle = "rgba(5, 2, 0, 0.92)";
+    ctx.beginPath();
+    ctx.arc(eyeX, eyeY, eyeR * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Specular highlight
+    ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
+    ctx.beginPath();
+    ctx.arc(eyeX + eyeR * 0.25, eyeY - eyeR * 0.25, eyeR * 0.22, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.filter = "none";
     ctx.restore();
   }
 }
+
+/* ─── Drawing Functions ─── */
 
 function drawBackground() {
   const gradient = ctx.createLinearGradient(0, 0, 0, height);
@@ -678,6 +976,107 @@ function drawBackground() {
     );
     ctx.fill();
   }
+  ctx.restore();
+}
+
+function drawPondEdge() {
+  ctx.save();
+
+  // Dark edge shadow around the border
+  const edgeWidth = Math.min(width, height) * 0.06;
+
+  // Top edge - stone/rock border
+  const topEdge = ctx.createLinearGradient(0, 0, 0, edgeWidth * 1.5);
+  topEdge.addColorStop(0, "rgba(28, 22, 18, 0.85)");
+  topEdge.addColorStop(0.4, "rgba(45, 38, 30, 0.5)");
+  topEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = topEdge;
+  ctx.fillRect(0, 0, width, edgeWidth * 1.5);
+
+  // Bottom edge
+  const bottomEdge = ctx.createLinearGradient(0, height, 0, height - edgeWidth * 1.2);
+  bottomEdge.addColorStop(0, "rgba(5, 12, 15, 0.9)");
+  bottomEdge.addColorStop(0.5, "rgba(15, 22, 25, 0.4)");
+  bottomEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = bottomEdge;
+  ctx.fillRect(0, height - edgeWidth * 1.2, width, edgeWidth * 1.2);
+
+  // Left edge
+  const leftEdge = ctx.createLinearGradient(0, 0, edgeWidth * 1.2, 0);
+  leftEdge.addColorStop(0, "rgba(20, 16, 12, 0.75)");
+  leftEdge.addColorStop(0.5, "rgba(30, 25, 18, 0.3)");
+  leftEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = leftEdge;
+  ctx.fillRect(0, 0, edgeWidth * 1.2, height);
+
+  // Right edge
+  const rightEdge = ctx.createLinearGradient(width, 0, width - edgeWidth * 1.2, 0);
+  rightEdge.addColorStop(0, "rgba(20, 16, 12, 0.75)");
+  rightEdge.addColorStop(0.5, "rgba(30, 25, 18, 0.3)");
+  rightEdge.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = rightEdge;
+  ctx.fillRect(width - edgeWidth * 1.2, 0, edgeWidth * 1.2, height);
+
+  // Subtle stone texture along edges
+  ctx.filter = "blur(3px)";
+  for (let i = 0; i < 24; i++) {
+    const side = i % 4;
+    let sx, sy;
+    if (side === 0) { sx = rand(0, width); sy = rand(0, edgeWidth * 0.6); }
+    else if (side === 1) { sx = rand(0, width); sy = height - rand(0, edgeWidth * 0.4); }
+    else if (side === 2) { sx = rand(0, edgeWidth * 0.5); sy = rand(0, height); }
+    else { sx = width - rand(0, edgeWidth * 0.5); sy = rand(0, height); }
+
+    ctx.fillStyle = `rgba(${40 + rand(0, 30)}, ${32 + rand(0, 20)}, ${22 + rand(0, 15)}, ${rand(0.08, 0.2)})`;
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, rand(12, 35), rand(8, 22), rand(-1, 1), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawCaustics() {
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.filter = "blur(18px)";
+
+  const causticCount = 12;
+  for (let i = 0; i < causticCount; i++) {
+    const phase = time * (0.15 + i * 0.012) + i * 1.7;
+    const cx = width * (0.1 + (i / causticCount) * 0.8) + Math.sin(phase * 0.7) * 60;
+    const cy = height * (0.2 + (i % 4) * 0.15) + Math.cos(phase * 0.5 + i) * 40;
+    const rx = 40 + Math.sin(phase) * 20 + i * 5;
+    const ry = 20 + Math.cos(phase * 1.3) * 12 + i * 3;
+    const alpha = 0.018 + Math.sin(phase * 2) * 0.008;
+
+    ctx.fillStyle = `rgba(180, 230, 220, ${alpha})`;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, phase * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Bright caustic network lines
+  ctx.lineWidth = 1.5;
+  ctx.lineCap = "round";
+  for (let i = 0; i < 8; i++) {
+    const phase = time * 0.12 + i * 2.1;
+    const alpha = 0.02 + Math.sin(phase * 1.5) * 0.01;
+    ctx.strokeStyle = `rgba(200, 245, 235, ${alpha})`;
+
+    ctx.beginPath();
+    const startX = width * rand(0.05, 0.95);
+    const startY = height * rand(0.1, 0.7);
+    ctx.moveTo(startX, startY);
+    for (let j = 1; j <= 4; j++) {
+      ctx.lineTo(
+        startX + Math.sin(phase + j * 1.5) * 80,
+        startY + j * 25 + Math.cos(phase * 0.8 + j) * 20
+      );
+    }
+    ctx.stroke();
+  }
+
   ctx.restore();
 }
 
@@ -768,6 +1167,12 @@ function drawBackWater() {
 function drawSpecks() {
   for (const speck of specks) {
     speck.draw();
+  }
+}
+
+function drawLilyPads() {
+  for (const pad of lilyPads) {
+    pad.draw();
   }
 }
 
@@ -862,6 +1267,27 @@ function drawVignette() {
   ctx.fillRect(0, 0, width, height);
 }
 
+function drawSurfaceDistortion() {
+  // Subtle animated water surface highlights
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.filter = "blur(24px)";
+
+  for (let i = 0; i < 5; i++) {
+    const phase = time * 0.18 + i * 1.4;
+    const cx = width * (0.15 + i * 0.18) + Math.sin(phase) * 50;
+    const cy = height * 0.15 + Math.cos(phase * 0.7 + i) * 30;
+    const alpha = 0.015 + Math.sin(phase * 1.2) * 0.008;
+
+    ctx.fillStyle = `rgba(220, 245, 250, ${alpha})`;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 80 + Math.sin(phase * 0.5) * 30, 20 + Math.sin(phase * 0.8) * 8, phase * 0.15, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
 function addRipple(x, y) {
   ripples.push(new Ripple(x, y));
   for (let i = 0; i < 10; i++) {
@@ -880,6 +1306,10 @@ function addRipple(x, y) {
 function update(dt) {
   for (const speck of specks) {
     speck.update(dt);
+  }
+
+  for (const pad of lilyPads) {
+    pad.update(dt);
   }
 
   for (let i = ripples.length - 1; i >= 0; i--) {
@@ -902,7 +1332,9 @@ function update(dt) {
 function render() {
   ctx.clearRect(0, 0, width, height);
   drawBackground();
+  drawPondEdge();
   drawBackWater();
+  drawCaustics();
   drawSpecks();
 
   fish.sort((a, b) => a.depth - b.depth || a.y - b.y);
@@ -911,6 +1343,8 @@ function render() {
   }
 
   drawFrontWaterVeil();
+  drawSurfaceDistortion();
+  drawLilyPads();
   drawRipplesAndDrops();
   drawVignette();
 }

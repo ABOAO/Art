@@ -61,15 +61,23 @@
         top: 24px;
         left: 24px;
         z-index: 3;
-        max-width: min(320px, calc(100vw - 48px));
+        max-width: min(360px, calc(100vw - 48px));
         padding: 16px 18px;
         border: 1px solid var(--glass-border);
         border-radius: 20px;
         background: var(--glass-fill);
         backdrop-filter: blur(18px);
         box-shadow: var(--shadow);
-        pointer-events: none;
+        pointer-events: auto;
+        max-height: min(52vh, 480px);
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255,255,255,0.12) transparent;
+        transition: max-height 0.4s ease;
       }
+
+      .hud::-webkit-scrollbar { width: 4px; }
+      .hud::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
 
       .hud-label {
         display: inline-block;
@@ -95,6 +103,32 @@
         margin-top: 10px;
         font-size: 0.85rem;
         color: rgba(230, 236, 255, 0.58);
+      }
+
+      .hud-info {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .hud-dl {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 6px 12px;
+        margin: 0;
+        font-size: 0.78rem;
+        line-height: 1.45;
+      }
+
+      .hud-dl dt {
+        color: rgba(142, 197, 255, 0.8);
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .hud-dl dd {
+        margin: 0;
+        color: rgba(230, 236, 255, 0.82);
       }
 
       .loading-label {
@@ -378,10 +412,17 @@
   <body>
     <div id="scene" aria-label="Interactive 3D space scene"></div>
 
-    <aside class="hud" aria-hidden="true">
-      <span class="hud-label">Deep Space</span>
-      <p>拖曳旋轉視角，滾輪縮放，像漂浮在整個宇宙中觀看地球。</p>
-      <p>場景現在包含太陽、天倉五、波江座 40A 與銀河外遠景，隨機視角會從更遠的世界回望地球。</p>
+    <aside id="hud" class="hud" aria-hidden="true">
+      <span id="hudLabel" class="hud-label">Deep Space</span>
+      <p id="hudDesc">拖曳旋轉視角，滾輪縮放，像漂浮在整個宇宙中觀看地球。</p>
+      <div id="hudInfo" class="hud-info" style="display:none">
+        <dl class="hud-dl">
+          <dt>構成成份</dt><dd id="hudComposition"></dd>
+          <dt>重力</dt><dd id="hudGravity"></dd>
+          <dt>時間換算</dt><dd id="hudTimeConversion"></dd>
+          <dt>小知識</dt><dd id="hudFact"></dd>
+        </dl>
+      </div>
     </aside>
 
     <div id="loadingLabel" class="loading-label">載入宇宙場景中...</div>

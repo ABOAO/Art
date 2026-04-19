@@ -9,6 +9,9 @@ const lilyPads = [];
 const backReflections = [];
 const causticLines = [];
 const surfaceHighlights = [];
+const windRipples = [];
+
+let windTimer = 0;
 
 const koiPalettes = [
   {
@@ -398,6 +401,7 @@ function seedScene() {
   ripples.length = 0;
   droplets.length = 0;
   lilyPads.length = 0;
+  windRipples.length = 0;
 
   for (let i = 0; i < fishCount(); i++) {
     fish.push(new Koi(i));
@@ -678,6 +682,38 @@ class Droplet {
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.size * (1 - progress * 0.3), 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* ─── Wind ripple (tiny surface perturbations) ─── */
+class WindRipple {
+  constructor() {
+    this.x = rand(width * 0.1, width * 0.9);
+    this.y = rand(height * 0.55, height * 0.96);
+    this.age = 0;
+    this.life = rand(2.2, 3.6);
+    this.maxR = rand(14, 34);
+    this.ellipseRatio = rand(0.35, 0.55);
+    this.angle = rand(-0.4, 0.4);
+  }
+
+  update(dt) {
+    this.age += dt;
+    return this.age < this.life;
+  }
+
+  draw() {
+    const t = this.age / this.life;
+    const r = this.maxR * Math.pow(t, 0.7);
+    const alpha = 0.14 * (1 - t) * t * 4;
+    if (alpha <= 0) return;
+    ctx.save();
+    ctx.strokeStyle = `rgba(220, 238, 240, ${alpha.toFixed(3)})`;
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    ctx.ellipse(this.x, this.y, r, r * this.ellipseRatio, this.angle, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
   }
 }
@@ -1091,13 +1127,17 @@ class Koi {
     // Wake trail
     this.drawWake();
 
-    // Shadow
+    // Cast shadow on the pond floor — larger offset and softer blur so it
+    // reads as a silhouette projected by overhead light through the water.
+    const shadowOffset = 22 * this.depth;
+    const shadowScale = 1.08 + this.depth * 0.05;
     ctx.save();
-    ctx.translate(this.x + 12 * this.depth, this.y + 16 * this.depth);
+    ctx.translate(this.x + shadowOffset * 0.6, this.y + shadowOffset);
     ctx.rotate(this.angle);
-    ctx.globalAlpha = 0.17 * this.depth;
+    ctx.scale(shadowScale, shadowScale * 0.82);
+    ctx.globalAlpha = 0.22 * this.depth;
     ctx.fillStyle = "rgba(2, 9, 14, 0.9)";
-    ctx.filter = `blur(${4 + this.depth * 2}px)`;
+    ctx.filter = `blur(${8 + this.depth * 3}px)`;
     this.traceTail(tailSwing);
     ctx.fill();
     this.traceBody();
@@ -1121,15 +1161,40 @@ class Koi {
     this.traceBody();
     ctx.fill();
 
+    // Dorsal-to-belly shading — darker on back (top), lighter belly, and
+    // a thin specular rim along the upper edge gives the fish volume.
     const sideShade = ctx.createLinearGradient(0, -halfWidth, 0, halfWidth);
-    sideShade.addColorStop(0, "rgba(0, 0, 0, 0.09)");
-    sideShade.addColorStop(0.4, "rgba(0, 0, 0, 0)");
-    sideShade.addColorStop(1, "rgba(0, 0, 0, 0.16)");
+    sideShade.addColorStop(0, "rgba(0, 0, 0, 0.24)");
+    sideShade.addColorStop(0.25, "rgba(0, 0, 0, 0.08)");
+    sideShade.addColorStop(0.55, "rgba(0, 0, 0, 0)");
+    sideShade.addColorStop(1, "rgba(255, 240, 220, 0.12)");
     ctx.fillStyle = sideShade;
     this.traceBody();
     ctx.fill();
 
     this.drawPattern();
+
+    // Refracted caustic bands crossing the body (driven by pond time).
+    ctx.save();
+    this.traceBody();
+    ctx.clip();
+    ctx.globalCompositeOperation = "screen";
+    const bandCount = 3;
+    for (let i = 0; i < bandCount; i++) {
+      const phase = time * 0.6 + i * 1.3 + this.pulse;
+      const bx = Math.sin(phase) * length * 0.35;
+      const byOff = Math.cos(phase * 0.7) * halfWidth * 0.2;
+      const grad = ctx.createLinearGradient(
+        bx - length * 0.2, byOff - halfWidth,
+        bx + length * 0.2, byOff + halfWidth
+      );
+      grad.addColorStop(0, "rgba(255, 250, 225, 0)");
+      grad.addColorStop(0.5, `rgba(255, 250, 225, ${0.09 + i * 0.02})`);
+      grad.addColorStop(1, "rgba(255, 250, 225, 0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(-length, -halfWidth * 2, length * 2, halfWidth * 4);
+    }
+    ctx.restore();
 
     // Mouth line
     ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
@@ -1475,6 +1540,17 @@ function update(dt) {
     }
   }
 
+  windTimer -= dt;
+  if (windTimer <= 0) {
+    windRipples.push(new WindRipple());
+    windTimer = rand(0.25, 0.9);
+  }
+  for (let i = windRipples.length - 1; i >= 0; i--) {
+    if (!windRipples[i].update(dt)) {
+      windRipples.splice(i, 1);
+    }
+  }
+
   for (const koi of fish) {
     koi.update(dt);
   }
@@ -1494,9 +1570,14 @@ function render() {
 
   drawFrontWaterVeil();
   drawSurfaceDistortion();
+  drawWindRipples();
   drawLilyPads();
   drawRipplesAndDrops();
   drawVignette();
+}
+
+function drawWindRipples() {
+  for (const r of windRipples) r.draw();
 }
 
 function frame(now) {

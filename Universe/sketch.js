@@ -763,6 +763,7 @@ let lastHudRefreshAt = 0;
 let menuOpen = false;
 let sunGroup;
 let sunMesh;
+let sunCoronaMesh;
 let sunGlowSprites = [];
 
 const clock = new THREE.Clock();
@@ -857,9 +858,45 @@ function setupSun() {
   sunGroup = new THREE.Group();
   sunGroup.position.copy(SUN_POSITION);
 
-  const sunMaterial = new THREE.MeshBasicMaterial({
-    map: createSunTexture(),
-    color: 0xffe7b0
+  // Custom sun shader with limb darkening so the disc reads as a sphere,
+  // not a flat billboard. Brighter core, cooler edges.
+  const sunMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      sunMap: { value: createSunTexture() },
+      time: { value: 0 }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vWorldPosition;
+      void main() {
+        vUv = uv;
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D sunMap;
+      uniform float time;
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vWorldPosition;
+      void main() {
+        // Subtly scroll UVs to hint at roiling surface.
+        vec2 uv = vUv + vec2(time * 0.002, sin(time * 0.3 + vUv.y * 6.28) * 0.002);
+        vec3 base = texture2D(sunMap, uv).rgb;
+        vec3 vd = normalize(cameraPosition - vWorldPosition);
+        float mu = max(dot(vNormal, vd), 0.0);
+        // Linear limb darkening (Eddington approximation, coefficient ~0.6).
+        float darken = 0.4 + 0.6 * mu;
+        vec3 hot = vec3(1.3, 1.1, 0.7);
+        vec3 cool = vec3(1.0, 0.55, 0.22);
+        vec3 tint = mix(cool, hot, mu);
+        gl_FragColor = vec4(base * tint * darken, 1.0);
+      }
+    `
   });
 
   sunMesh = new THREE.Mesh(
@@ -867,6 +904,40 @@ function setupSun() {
     sunMaterial
   );
   sunGroup.add(sunMesh);
+
+  // Corona: back-side additive shell that only appears at grazing angles.
+  const coronaGeometry = new THREE.SphereGeometry(SUN_RADIUS * 1.35, 64, 64);
+  const coronaMaterial = new THREE.ShaderMaterial({
+    uniforms: { time: { value: 0 } },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vWorldPosition;
+      void main() {
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform float time;
+      varying vec3 vNormal;
+      varying vec3 vWorldPosition;
+      void main() {
+        vec3 vd = normalize(cameraPosition - vWorldPosition);
+        float rim = pow(1.0 - max(dot(vNormal, vd), 0.0), 2.0);
+        float flicker = 0.9 + 0.1 * sin(time * 2.0 + vWorldPosition.y * 0.6);
+        vec3 col = mix(vec3(1.0, 0.5, 0.15), vec3(1.0, 0.85, 0.55), rim);
+        gl_FragColor = vec4(col, rim * 0.85 * flicker);
+      }
+    `,
+    blending: THREE.AdditiveBlending,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false
+  });
+  sunCoronaMesh = new THREE.Mesh(coronaGeometry, coronaMaterial);
+  sunGroup.add(sunCoronaMesh);
 
   sunGlowSprites = [
     createGlowSprite({
@@ -891,41 +962,88 @@ function setupSun() {
 }
 
 function setupEarth() {
-  // Start with a graceful fallback material so the scene is visible before textures finish loading.
-  const earthGeometry = new THREE.SphereGeometry(EARTH_RADIUS, 96, 96);
+  const earthGeometry = new THREE.SphereGeometry(EARTH_RADIUS, 128, 128);
   const earthMaterial = new THREE.MeshPhongMaterial({
     color: 0x4b74b6,
-    shininess: 22,
-    specular: new THREE.Color(0x355281)
+    shininess: 60,
+    specular: new THREE.Color(0x223044)
   });
+  earthMaterial.onBeforeCompile = (shader) => {
+    shader.uniforms.sunDir = { value: new THREE.Vector3().subVectors(SUN_POSITION, EARTH_POSITION).normalize() };
+    shader.uniforms.rimColor = { value: new THREE.Color(0x6eb7ff) };
+    shader.uniforms.terminatorTint = { value: new THREE.Color(0xff9c54) };
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+         uniform vec3 sunDir;
+         uniform vec3 rimColor;
+         uniform vec3 terminatorTint;
+         varying vec3 vWorldN;
+         varying vec3 vWorldP;`
+      )
+      .replace(
+        "#include <dithering_fragment>",
+        `#include <dithering_fragment>
+         vec3 vd = normalize(cameraPosition - vWorldP);
+         float lambert = max(dot(vWorldN, sunDir), 0.0);
+         float fres = pow(1.0 - max(dot(vWorldN, vd), 0.0), 3.0);
+         // Atmospheric rim: brightest where sunlight grazes the limb.
+         float limb = fres * smoothstep(-0.15, 0.45, lambert);
+         gl_FragColor.rgb += rimColor * limb * 0.55;
+         // Terminator warm scatter (sunset band).
+         float term = smoothstep(0.0, 0.18, lambert) * (1.0 - smoothstep(0.18, 0.42, lambert));
+         gl_FragColor.rgb += terminatorTint * term * fres * 0.45;
+         // Slight night-side desaturation (no city lights texture available).
+         float night = smoothstep(0.1, -0.05, lambert);
+         gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * 0.35 + vec3(0.01, 0.02, 0.05), night);`
+      );
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+         varying vec3 vWorldN;
+         varying vec3 vWorldP;`
+      )
+      .replace(
+        "#include <worldpos_vertex>",
+        `#include <worldpos_vertex>
+         vWorldN = normalize(mat3(modelMatrix) * normal);
+         vWorldP = (modelMatrix * vec4(position, 1.0)).xyz;`
+      );
+    earthMaterial.userData.shader = shader;
+  };
 
   earthMesh = new THREE.Mesh(earthGeometry, earthMaterial);
   scene.add(earthMesh);
 
-  const cloudGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.012, 96, 96);
+  // Cloud layer: normal blending + slight offset shell so clouds cast a
+  // soft self-shadow on the globe instead of just brightening it.
+  const cloudGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.015, 96, 96);
   const cloudMaterial = new THREE.MeshPhongMaterial({
     color: 0xffffff,
     transparent: true,
-    opacity: 0.12,
+    opacity: 0.85,
     depthWrite: false,
-    blending: THREE.AdditiveBlending
+    alphaTest: 0.02
   });
 
   cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
   scene.add(cloudMesh);
 
-  // A subtle additive shell makes the planet glow without needing post-processing.
-  const atmosphereGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.09, 64, 64);
+  // Atmosphere: simplified Rayleigh-ish backside shell with sun-aware tint.
+  const atmosphereGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.14, 64, 64);
   const atmosphereMaterial = new THREE.ShaderMaterial({
     uniforms: {
-      glowColor: { value: new THREE.Color(0x58a6ff) }
+      glowColor: { value: new THREE.Color(0x5ea8ff) },
+      sunDir: { value: new THREE.Vector3().subVectors(SUN_POSITION, EARTH_POSITION).normalize() }
     },
     vertexShader: `
       varying vec3 vNormal;
       varying vec3 vWorldPosition;
 
       void main() {
-        vNormal = normalize(normalMatrix * normal);
+        vNormal = normalize(mat3(modelMatrix) * normal);
         vec4 worldPosition = modelMatrix * vec4(position, 1.0);
         vWorldPosition = worldPosition.xyz;
         gl_Position = projectionMatrix * viewMatrix * worldPosition;
@@ -933,13 +1051,19 @@ function setupEarth() {
     `,
     fragmentShader: `
       uniform vec3 glowColor;
+      uniform vec3 sunDir;
       varying vec3 vNormal;
       varying vec3 vWorldPosition;
 
       void main() {
         vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
-        float intensity = pow(0.82 - dot(vNormal, viewDirection), 4.0);
-        gl_FragColor = vec4(glowColor, intensity * 0.5);
+        float rim = pow(1.0 - dot(vNormal, viewDirection), 3.5);
+        float sunFacing = clamp(dot(vNormal, sunDir) * 0.5 + 0.5, 0.0, 1.0);
+        // Daylight limb is blue; twilight limb warms to orange.
+        vec3 warm = vec3(1.0, 0.55, 0.32);
+        vec3 tint = mix(warm, glowColor, smoothstep(0.25, 0.65, sunFacing));
+        float intensity = rim * (0.45 + 0.75 * sunFacing);
+        gl_FragColor = vec4(tint, intensity);
       }
     `,
     blending: THREE.AdditiveBlending,
@@ -1683,44 +1807,59 @@ function createHostStar(hostStar) {
 }
 
 function createSunTexture() {
+  // Equirectangular-ish texture (2:1) so granulation wraps without seams.
   const canvas = document.createElement("canvas");
-  canvas.width = 1024;
+  canvas.width = 2048;
   canvas.height = 1024;
   const context = canvas.getContext("2d");
-  const center = canvas.width / 2;
 
-  const gradient = context.createRadialGradient(
-    center,
-    center,
-    80,
-    center,
-    center,
-    center
-  );
-  gradient.addColorStop(0, "#fffef0");
-  gradient.addColorStop(0.26, "#ffd982");
-  gradient.addColorStop(0.58, "#ff9d2f");
-  gradient.addColorStop(0.82, "#ff6c1a");
-  gradient.addColorStop(1, "#8c2f07");
-  context.fillStyle = gradient;
+  // Base — warm photosphere color; granulation comes from noise overlays.
+  context.fillStyle = "#ffbf58";
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  for (let index = 0; index < 260; index += 1) {
-    const angle = Math.random() * Math.PI * 2;
-    const distance = 90 + Math.random() * 320;
-    const x = center + Math.cos(angle) * distance;
-    const y = center + Math.sin(angle) * distance;
-    const radius = 16 + Math.random() * 54;
-    const alpha = 0.04 + Math.random() * 0.12;
-
+  // Granulation cells.
+  for (let i = 0; i < 3600; i++) {
+    const x = Math.random() * canvas.width;
+    const y = Math.random() * canvas.height;
+    const r = 3 + Math.random() * 12;
+    const shade = Math.random();
+    const col = shade > 0.5
+      ? `rgba(255, 240, 190, ${0.08 + Math.random() * 0.22})`
+      : `rgba(170, 60, 10, ${0.05 + Math.random() * 0.18})`;
     context.beginPath();
-    context.fillStyle = `rgba(255, 232, 180, ${alpha})`;
-    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fillStyle = col;
+    context.arc(x, y, r, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  // Darker sunspots clustered near the equator.
+  for (let i = 0; i < 14; i++) {
+    const x = Math.random() * canvas.width;
+    const y = canvas.height * 0.35 + Math.random() * canvas.height * 0.3;
+    const r = 10 + Math.random() * 26;
+    const grad = context.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, "rgba(40, 12, 4, 0.85)");
+    grad.addColorStop(0.5, "rgba(120, 40, 10, 0.6)");
+    grad.addColorStop(1, "rgba(180, 80, 20, 0)");
+    context.fillStyle = grad;
+    context.beginPath();
+    context.arc(x, y, r, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  // Bright flare flecks.
+  for (let i = 0; i < 60; i++) {
+    const x = Math.random() * canvas.width;
+    const y = Math.random() * canvas.height;
+    context.fillStyle = `rgba(255, 252, 220, ${0.1 + Math.random() * 0.3})`;
+    context.beginPath();
+    context.arc(x, y, 1 + Math.random() * 2.2, 0, Math.PI * 2);
     context.fill();
   }
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
   texture.needsUpdate = true;
   return texture;
 }
@@ -1800,6 +1939,8 @@ function setupStars() {
 function createStarLayer(config) {
   const positions = new Float32Array(config.count * 3);
   const colors = new Float32Array(config.count * 3);
+  const phases = new Float32Array(config.count);
+  const seeds = new Float32Array(config.count);
 
   for (let index = 0; index < config.count; index += 1) {
     const positionOffset = index * 3;
@@ -1816,28 +1957,64 @@ function createStarLayer(config) {
     positions[positionOffset + 1] = radius * Math.cos(phi);
     positions[positionOffset + 2] = radius * sinPhi * Math.sin(theta);
 
-    const color = new THREE.Color().setHSL(
-      0.56 + THREE.MathUtils.randFloatSpread(0.1),
-      0.35,
-      0.75 + Math.random() * 0.22
-    );
+    // Broader stellar color palette — some blue-white giants, some red dwarfs.
+    const hue = Math.random() < 0.15
+      ? 0.04 + Math.random() * 0.08   // reddish
+      : 0.55 + Math.random() * 0.12;  // bluish-white
+    const color = new THREE.Color().setHSL(hue, 0.35, 0.78 + Math.random() * 0.2);
 
     colors[positionOffset] = color.r;
     colors[positionOffset + 1] = color.g;
     colors[positionOffset + 2] = color.b;
+
+    phases[index] = Math.random() * Math.PI * 2;
+    seeds[index] = 0.3 + Math.random() * 0.9;
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute("twPhase", new THREE.BufferAttribute(phases, 1));
+  geometry.setAttribute("twSeed", new THREE.BufferAttribute(seeds, 1));
 
-  const material = new THREE.PointsMaterial({
-    color: 0xffffff,
-    size: config.size,
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      time: { value: 0 },
+      baseSize: { value: config.size },
+      baseOpacity: { value: config.opacity }
+    },
+    vertexShader: `
+      attribute vec3 color;
+      attribute float twPhase;
+      attribute float twSeed;
+      uniform float time;
+      uniform float baseSize;
+      varying vec3 vColor;
+      varying float vTwinkle;
+      void main() {
+        vColor = color;
+        float flicker = 0.6 + 0.4 * sin(time * (1.2 + twSeed * 2.0) + twPhase);
+        vTwinkle = flicker;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = baseSize * (0.8 + flicker * 0.9) * (300.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform float baseOpacity;
+      varying vec3 vColor;
+      varying float vTwinkle;
+      void main() {
+        // Soft circular star with radial falloff.
+        vec2 d = gl_PointCoord - vec2(0.5);
+        float r = length(d);
+        if (r > 0.5) discard;
+        float core = smoothstep(0.5, 0.0, r);
+        float glow = pow(core, 1.8);
+        gl_FragColor = vec4(vColor, baseOpacity * glow * vTwinkle);
+      }
+    `,
     transparent: true,
-    opacity: config.opacity,
-    vertexColors: true,
-    sizeAttenuation: true,
     blending: THREE.AdditiveBlending,
     depthWrite: false
   });
@@ -2327,8 +2504,11 @@ async function loadEarthTextures() {
 
   if (cloudTexture.status === "fulfilled") {
     cloudTexture.value.colorSpace = THREE.SRGBColorSpace;
-    cloudMesh.material.map = cloudTexture.value;
-    cloudMesh.material.opacity = 0.26;
+    const cloudTex = cloudTexture.value;
+    cloudMesh.material.map = cloudTex;
+    cloudMesh.material.alphaMap = cloudTex;
+    cloudMesh.material.transparent = true;
+    cloudMesh.material.opacity = 0.92;
     cloudMesh.material.needsUpdate = true;
   }
 
@@ -2394,6 +2574,20 @@ function animate(now = performance.now()) {
   atmosphereMesh.rotation.y += delta * 0.02;
   sunMesh.rotation.y += delta * 0.024;
   sunGroup.rotation.z += delta * 0.01;
+
+  if (sunMesh.material.uniforms && sunMesh.material.uniforms.time) {
+    sunMesh.material.uniforms.time.value = elapsed;
+  }
+  if (sunCoronaMesh && sunCoronaMesh.material.uniforms.time) {
+    sunCoronaMesh.material.uniforms.time.value = elapsed;
+  }
+
+  // Update star twinkle uniforms.
+  starLayers.forEach((layer) => {
+    if (layer.material.uniforms && layer.material.uniforms.time) {
+      layer.material.uniforms.time.value = elapsed;
+    }
+  });
 
   if (sunGlowSprites[0]) {
     sunGlowSprites[0].material.opacity = 0.58 + Math.sin(elapsed * 1.1) * 0.06;

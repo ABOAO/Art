@@ -789,6 +789,7 @@ function init() {
   setupStars();
   setupNebulaSprites();
   setupIntergalacticLandmarks();
+  enableCelestialShadows();
   assignViewpointOrder();
   populateSelectorMenu();
   setupControls();
@@ -828,7 +829,10 @@ function setupScene() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.08;
+  renderer.toneMappingExposure = 1.02;
+  renderer.physicallyCorrectLights = true;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   sceneMount.appendChild(renderer.domElement);
 }
@@ -843,6 +847,15 @@ function setupLights() {
 
   const sunLight = new THREE.DirectionalLight(0xffffff, 2.3);
   sunLight.position.copy(SUN_POSITION);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(2048, 2048);
+  sunLight.shadow.camera.near = 0.1;
+  sunLight.shadow.camera.far = 260;
+  sunLight.shadow.camera.left = -90;
+  sunLight.shadow.camera.right = 90;
+  sunLight.shadow.camera.top = 90;
+  sunLight.shadow.camera.bottom = -90;
+  sunLight.shadow.bias = -0.00008;
   scene.add(sunLight);
 
   const solarBloom = new THREE.PointLight(0xfff1b1, 5.4, 400, 1.4);
@@ -852,6 +865,16 @@ function setupLights() {
   const rimLight = new THREE.DirectionalLight(0x4e86ff, 0.9);
   rimLight.position.set(-6, -3, -8);
   scene.add(rimLight);
+}
+
+function enableCelestialShadows() {
+  scene.traverse((node) => {
+    if (!node.isMesh) return;
+    if (!node.geometry || !node.geometry.type.includes("Sphere")) return;
+
+    node.castShadow = true;
+    node.receiveShadow = true;
+  });
 }
 
 function setupSun() {

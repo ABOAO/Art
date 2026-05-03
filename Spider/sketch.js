@@ -316,14 +316,17 @@ class Spider {
 // ---------- Silk rendering ----------
 
 function drawSilkSegment(layer, a, b) {
+  const threadTwist = noise(a.x * 0.01, a.y * 0.01, frameCount * 0.004) - 0.5;
+  const offX = threadTwist * 0.5;
+  const offY = threadTwist * -0.5;
   const g = layer.drawingContext;
   // Soft halo (wider, very faint warm tone).
   g.lineCap = "round";
   g.strokeStyle = "rgba(80, 70, 55, 0.08)";
   g.lineWidth = 2.4;
   g.beginPath();
-  g.moveTo(a.x, a.y);
-  g.lineTo(b.x, b.y);
+  g.moveTo(a.x + offX, a.y + offY);
+  g.lineTo(b.x + offX, b.y + offY);
   g.stroke();
 
   // Dark core.
@@ -332,6 +335,14 @@ function drawSilkSegment(layer, a, b) {
   g.beginPath();
   g.moveTo(a.x, a.y);
   g.lineTo(b.x, b.y);
+  if (random() < 0.12) {
+    g.strokeStyle = "rgba(44, 40, 34, 0.45)";
+    g.lineWidth = 0.45;
+    g.stroke();
+    g.beginPath();
+    g.moveTo(a.x - offX * 0.8, a.y - offY * 0.8);
+    g.lineTo(b.x - offX * 0.8, b.y - offY * 0.8);
+  }
   g.stroke();
 
   // Highlight: alpha modulated by how perpendicular the segment is to

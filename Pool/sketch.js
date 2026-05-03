@@ -13,6 +13,21 @@ const windRipples = [];
 
 let windTimer = 0;
 
+const fishingState = {
+  pointerDown: false,
+  active: false,
+  x: 0,
+  y: 0,
+  holdTime: 0,
+  nibbleTimer: 0,
+  nibbleCount: 0,
+  fishIndex: -1,
+  fishLatched: false,
+  tension: 0
+};
+
+const FISHING_HOLD_THRESHOLD = 0.28;
+
 const koiPalettes = [
   {
     bodyLight: "#f2ede2",
@@ -746,6 +761,8 @@ class Koi {
     // Wake trail positions
     this.trail = [];
     this.trailTimer = 0;
+    this.fishingInterested = 0;
+    this.nibblePhase = rand(0, Math.PI * 2);
     this.setTarget(true);
   }
 
@@ -765,6 +782,16 @@ class Koi {
       height * 0.95
     );
     this.wander = rand(2.8, 5.4);
+  }
+
+  moveTowardPoint(px, py, weight = 1) {
+    this.targetX = clamp(px + rand(-18, 18), 50, width - 50);
+    this.targetY = clamp(py + rand(-14, 14), height * 0.56, height * 0.94);
+    this.wander = Math.max(this.wander, 0.4 + weight * 0.8);
+  }
+
+  distanceTo(x, y) {
+    return Math.hypot(this.x - x, this.y - y);
   }
 
   reactToRipple(x, y) {
@@ -1504,9 +1531,79 @@ function drawSurfaceDistortion() {
   ctx.restore();
 }
 
-function addRipple(x, y) {
+function updateFishing(dt) {
+  if (!fishingState.pointerDown) {
+    fishingState.holdTime = 0;
+    return;
+  }
+
+  fishingState.holdTime += dt;
+  if (!fishingState.active && fishingState.holdTime >= FISHING_HOLD_THRESHOLD) {
+    fishingState.active = true;
+    fishingState.nibbleTimer = rand(0.35, 0.8);
+    fishingState.nibbleCount = 0;
+    fishingState.fishIndex = findClosestFishIndex(fishingState.x, fishingState.y);
+    fishingState.fishLatched = false;
+    addRipple(fishingState.x, fishingState.y, 0.5);
+  }
+
+  if (!fishingState.active || fish.length === 0) return;
+
+  if (fishingState.fishIndex < 0 || !fish[fishingState.fishIndex]) {
+    fishingState.fishIndex = findClosestFishIndex(fishingState.x, fishingState.y);
+  }
+  const koi = fish[fishingState.fishIndex];
+  if (!koi) return;
+
+  koi.moveTowardPoint(fishingState.x, fishingState.y, 1);
+  const dist = koi.distanceTo(fishingState.x, fishingState.y);
+
+  fishingState.nibbleTimer -= dt;
+  if (!fishingState.fishLatched && dist < Math.max(70, koi.length * 0.35) && fishingState.nibbleTimer <= 0) {
+    fishingState.nibbleCount += 1;
+    fishingState.nibbleTimer = rand(0.22, 0.56);
+    addRipple(fishingState.x + rand(-8, 8), fishingState.y + rand(-6, 6), 0.6);
+
+    if (fishingState.nibbleCount >= 2 + Math.floor(Math.random() * 2) && dist < Math.max(48, koi.length * 0.25)) {
+      fishingState.fishLatched = true;
+      fishingState.tension = 1;
+      addRipple(fishingState.x, fishingState.y, 1.2);
+    }
+  }
+
+  if (fishingState.fishLatched) {
+    fishingState.tension = Math.max(0, fishingState.tension - dt * 0.4);
+  }
+}
+
+function findClosestFishIndex(x, y) {
+  let best = -1;
+  let bestDist = Infinity;
+  for (let i = 0; i < fish.length; i++) {
+    const d = fish[i].distanceTo(x, y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function endFishing() {
+  fishingState.pointerDown = false;
+  fishingState.active = false;
+  fishingState.holdTime = 0;
+  fishingState.nibbleTimer = 0;
+  fishingState.nibbleCount = 0;
+  fishingState.fishIndex = -1;
+  fishingState.fishLatched = false;
+  fishingState.tension = 0;
+}
+
+function addRipple(x, y, strength = 1) {
   ripples.push(new Ripple(x, y));
-  for (let i = 0; i < 7; i++) {
+  const dropCount = Math.max(2, Math.round(4 * strength));
+  for (let i = 0; i < dropCount; i++) {
     droplets.push(new Droplet(x, y));
   }
 
@@ -1551,6 +1648,8 @@ function update(dt) {
     }
   }
 
+  updateFishing(dt);
+
   for (const koi of fish) {
     koi.update(dt);
   }
@@ -1573,11 +1672,24 @@ function render() {
   drawWindRipples();
   drawLilyPads();
   drawRipplesAndDrops();
+  drawFishingUI();
   drawVignette();
 }
 
 function drawWindRipples() {
   for (const r of windRipples) r.draw();
+}
+
+function drawFishingUI() {
+  if (!fishingState.pointerDown) return;
+  ctx.save();
+  const glow = fishingState.fishLatched ? 0.65 : 0.25 + Math.min(0.35, fishingState.holdTime);
+  ctx.strokeStyle = `rgba(236, 250, 255, ${glow})`;
+  ctx.lineWidth = fishingState.fishLatched ? 2.2 : 1.2;
+  ctx.beginPath();
+  ctx.arc(fishingState.x, fishingState.y, fishingState.fishLatched ? 18 : 12, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function frame(now) {
@@ -1593,7 +1705,30 @@ function frame(now) {
 
 canvas.addEventListener("pointerdown", (event) => {
   const rect = canvas.getBoundingClientRect();
-  addRipple(event.clientX - rect.left, event.clientY - rect.top);
+  fishingState.x = event.clientX - rect.left;
+  fishingState.y = event.clientY - rect.top;
+  fishingState.pointerDown = true;
+  fishingState.holdTime = 0;
+  addRipple(fishingState.x, fishingState.y, 0.8);
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!fishingState.pointerDown) return;
+  const rect = canvas.getBoundingClientRect();
+  fishingState.x = event.clientX - rect.left;
+  fishingState.y = event.clientY - rect.top;
+});
+
+canvas.addEventListener("pointerup", () => {
+  endFishing();
+});
+
+canvas.addEventListener("pointercancel", () => {
+  endFishing();
+});
+
+canvas.addEventListener("pointerleave", () => {
+  endFishing();
 });
 
 window.addEventListener("resize", resize);

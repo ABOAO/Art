@@ -3,6 +3,8 @@ import { OrbitControls } from "./vendor/OrbitControls.module.js";
 
 const sceneMount = document.getElementById("scene");
 const randomButton = document.getElementById("randomButton");
+const inspectButton = document.getElementById("inspectButton");
+const earthViewButton = document.getElementById("earthViewButton");
 const menuButton = document.getElementById("menuButton");
 const loadingLabel = document.getElementById("loadingLabel");
 const transitionPulse = document.getElementById("transitionPulse");
@@ -23,10 +25,73 @@ const SUN_POSITION = new THREE.Vector3(-34, 14, -26);
 const SUN_RADIUS = 5.4;
 const TRANSITION_DURATION = 2200;
 const EARTH_DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const FULL_TURN = Math.PI * 2;
+const DEG_TO_RAD = Math.PI / 180;
+const J2000_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
+const VIEW_MODES = {
+  INSPECT: "inspect",
+  FROM_BODY: "fromBody"
+};
 
 // Ecliptic basis vectors (Sun→Earth direction & perpendicular in orbital plane)
 const _sunToEarth = new THREE.Vector3(34, -14, 26).normalize();
 const _eclipticPerp = new THREE.Vector3().crossVectors(_sunToEarth, new THREE.Vector3(0, 1, 0)).normalize();
+const _eclipticNormal = new THREE.Vector3().crossVectors(_eclipticPerp, _sunToEarth).normalize();
+const _spinAxisSource = new THREE.Vector3(0, 1, 0);
+
+// NASA Planetary Fact Sheet rotation periods in hours. Negative values rotate retrograde.
+const REAL_ROTATION_PERIOD_HOURS = {
+  "太陽": 609.12,
+  "水星": 1407.6,
+  "金星": -5832.5,
+  "地球": 23.9,
+  "月球": 655.7,
+  "火星": 24.6,
+  "木星": 9.9,
+  "土星": 10.7,
+  "天王星": -17.2,
+  "海王星": 16.1,
+  "冥王星": -153.3
+};
+
+const AXIAL_TILT_DEGREES = {
+  "太陽": 7.25,
+  "水星": 0.03,
+  "金星": 177.36,
+  "地球": 23.44,
+  "月球": 6.68,
+  "火星": 25.19,
+  "木星": 3.13,
+  "土星": 26.73,
+  "天王星": 97.77,
+  "海王星": 28.32,
+  "冥王星": 122.53,
+  "穀神星": 4.0,
+  "木衛一": 0.04,
+  "木衛二": 0.47,
+  "木衛三": 0.33,
+  "木衛四": 0.19,
+  "土衛六": 0.35,
+  "土衛二": 0.0,
+  "海衛一": 156.8,
+  "鬩神星": 78.0,
+  "妊神星": 28.0,
+  "鳥神星": 29.0
+};
+
+const SOLAR_SYSTEM_SHADOW_BODY_NAMES = new Set([
+  "水星",
+  "金星",
+  "地球",
+  "月球",
+  "火星",
+  "木星",
+  "土星",
+  "天王星",
+  "海王星",
+  "冥王星"
+]);
 
 function orbitalPosition(auFromSun, angleDeg) {
   // Compress distances: inner planets linear, outer planets √AU
@@ -309,6 +374,72 @@ function getBodyInfo(name) {
   return CURATED_BODY_INFO[canonicalName] || buildFallbackBodyInfo(name);
 }
 
+function getBodyRotationPeriodHours(name, info = null) {
+  const canonicalName = BODY_INFO_ALIASES[name] || name;
+  const realPeriod = REAL_ROTATION_PERIOD_HOURS[canonicalName];
+
+  if (Number.isFinite(realPeriod) && realPeriod !== 0) {
+    return realPeriod;
+  }
+
+  const bodyInfo = info || CURATED_BODY_INFO[canonicalName];
+  if (bodyInfo && Number.isFinite(bodyInfo.dayHours) && bodyInfo.dayHours > 0) {
+    return bodyInfo.dayHours;
+  }
+
+  return null;
+}
+
+function getRealTimeRotationAngle(periodHours, nowMs = Date.now()) {
+  if (!Number.isFinite(periodHours) || periodHours === 0) {
+    return 0;
+  }
+
+  const periodMs = Math.abs(periodHours) * HOUR_MS;
+  const elapsedMs = ((nowMs - J2000_MS) % periodMs + periodMs) % periodMs;
+  const direction = periodHours < 0 ? -1 : 1;
+  return direction * (elapsedMs / periodMs) * FULL_TURN;
+}
+
+function getStableRotationPhase(name) {
+  let hash = 0;
+
+  for (let index = 0; index < name.length; index += 1) {
+    hash = (hash * 31 + name.charCodeAt(index)) >>> 0;
+  }
+
+  return ((hash % 3600) / 3600) * FULL_TURN;
+}
+
+function getSpinAxisQuaternion(name) {
+  const canonicalName = BODY_INFO_ALIASES[name] || name;
+  const tiltDeg = AXIAL_TILT_DEGREES[canonicalName] || 0;
+  const tiltRad = tiltDeg * DEG_TO_RAD;
+  const phase = getStableRotationPhase(canonicalName);
+  const tiltDirection = _sunToEarth.clone().multiplyScalar(Math.cos(phase))
+    .add(_eclipticPerp.clone().multiplyScalar(Math.sin(phase)))
+    .normalize();
+  const spinAxis = _eclipticNormal.clone().multiplyScalar(Math.cos(tiltRad))
+    .add(tiltDirection.multiplyScalar(Math.sin(tiltRad)))
+    .normalize();
+
+  return new THREE.Quaternion().setFromUnitVectors(_spinAxisSource, spinAxis);
+}
+
+function applyRealTimeBodyRotation(mesh, name, nowMs) {
+  const info = getBodyInfo(name);
+  const rotationPeriodHours = getBodyRotationPeriodHours(name, info);
+
+  if (!Number.isFinite(rotationPeriodHours)) {
+    return false;
+  }
+
+  mesh.rotation.y =
+    getStableRotationPhase(name) +
+    getRealTimeRotationAngle(rotationPeriodHours, nowMs);
+  return true;
+}
+
 function buildFallbackBodyInfo(name) {
   if (name.startsWith("PSR B1257+12")) {
     return {
@@ -411,27 +542,30 @@ function formatPlanetDayLength(dayHours) {
     return null;
   }
 
-  if (dayHours >= 48) {
-    return `${(dayHours / 24).toLocaleString("zh-TW", {
+  const absoluteHours = Math.abs(dayHours);
+
+  if (absoluteHours >= 48) {
+    return `${(absoluteHours / 24).toLocaleString("zh-TW", {
       maximumFractionDigits: 1
     })} 地球日`;
   }
 
-  return `${dayHours.toLocaleString("zh-TW", {
+  return `${absoluteHours.toLocaleString("zh-TW", {
     maximumFractionDigits: 1
   })} 地球小時`;
 }
 
-function buildTimeConversionText(bodyName, info) {
+function buildTimeConversionText(bodyName, sourceName, info) {
   const now = new Date();
   const earthTimeText = formatEarthClock(now);
+  const rotationPeriodHours = getBodyRotationPeriodHours(sourceName, info);
 
-  if (!Number.isFinite(info.dayHours) || info.dayHours <= 0) {
+  if (!Number.isFinite(rotationPeriodHours)) {
     return `地球 ${earthTimeText} -> ${bodyName} 自轉資料不足，暫時無法可靠換算`;
   }
 
-  const planetDayMs = info.dayHours * 3600000;
-  const elapsedInPlanetDayMs = ((now.getTime() % planetDayMs) + planetDayMs) % planetDayMs;
+  const planetDayMs = Math.abs(rotationPeriodHours) * HOUR_MS;
+  const elapsedInPlanetDayMs = ((now.getTime() - J2000_MS) % planetDayMs + planetDayMs) % planetDayMs;
   const normalizedClockMinutes =
     (elapsedInPlanetDayMs / planetDayMs) * 24 * 60;
   const localHour = Math.floor(normalizedClockMinutes / 60) % 24;
@@ -442,9 +576,10 @@ function buildTimeConversionText(bodyName, info) {
     String(localMinute).padStart(2, "0"),
     String(localSecond).padStart(2, "0")
   ].join(":");
-  const dayLengthText = formatPlanetDayLength(info.dayHours);
+  const dayLengthText = formatPlanetDayLength(rotationPeriodHours);
+  const directionText = rotationPeriodHours < 0 ? "，逆行自轉" : "";
 
-  return `地球 ${earthTimeText} -> ${bodyName} ${localTimeText}（當地 1 日約 ${dayLengthText}）`;
+  return `地球 ${earthTimeText} -> ${bodyName} 自轉相位 ${localTimeText}（完整一圈約 ${dayLengthText}${directionText}）`;
 }
 const LEGACY_VIEWPOINT_BODY_DEFS = [
   {
@@ -749,6 +884,7 @@ let scene;
 let camera;
 let renderer;
 let controls;
+let earthSpinGroup;
 let earthMesh;
 let cloudMesh;
 let atmosphereMesh;
@@ -761,10 +897,12 @@ let currentViewpointName = "";
 let currentHudBody = null;
 let lastHudRefreshAt = 0;
 let menuOpen = false;
+let activeViewMode = VIEW_MODES.INSPECT;
 let sunGroup;
 let sunMesh;
 let sunCoronaMesh;
 let sunGlowSprites = [];
+let cameraFillLight;
 
 const clock = new THREE.Clock();
 const textureLoader = new THREE.TextureLoader();
@@ -829,8 +967,8 @@ function setupScene() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.02;
-  renderer.physicallyCorrectLights = true;
+  renderer.toneMappingExposure = 1.18;
+  renderer.useLegacyLights = false;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -838,39 +976,40 @@ function setupScene() {
 }
 
 function setupLights() {
-  // Layered lighting gives Earth a sunlit face plus a cooler rim in shadow.
-  const ambientLight = new THREE.AmbientLight(0x5370b8, 0.48);
+  // Keep the fill barely above black so the terminator is driven by the Sun.
+  const ambientLight = new THREE.AmbientLight(0x23365f, 0.08);
   scene.add(ambientLight);
 
-  const hemisphereLight = new THREE.HemisphereLight(0x9fc5ff, 0x05070d, 1.15);
+  const hemisphereLight = new THREE.HemisphereLight(0x7fa9ff, 0x02040a, 0.16);
   scene.add(hemisphereLight);
 
-  const sunLight = new THREE.DirectionalLight(0xffffff, 2.3);
-  sunLight.position.copy(SUN_POSITION);
-  sunLight.castShadow = true;
-  sunLight.shadow.mapSize.set(2048, 2048);
-  sunLight.shadow.camera.near = 0.1;
-  sunLight.shadow.camera.far = 260;
-  sunLight.shadow.camera.left = -90;
-  sunLight.shadow.camera.right = 90;
-  sunLight.shadow.camera.top = 90;
-  sunLight.shadow.camera.bottom = -90;
-  sunLight.shadow.bias = -0.00008;
-  scene.add(sunLight);
+  const solarLight = new THREE.PointLight(0xfff0c2, 2200, 0, 1.32);
+  solarLight.position.copy(SUN_POSITION);
+  solarLight.castShadow = true;
+  solarLight.shadow.mapSize.set(1024, 1024);
+  solarLight.shadow.camera.near = 1;
+  solarLight.shadow.camera.far = 900;
+  solarLight.shadow.bias = -0.00003;
+  solarLight.shadow.normalBias = 0.035;
+  scene.add(solarLight);
 
-  const solarBloom = new THREE.PointLight(0xfff1b1, 5.4, 400, 1.4);
-  solarBloom.position.copy(SUN_POSITION);
-  scene.add(solarBloom);
+  const coronaFill = new THREE.PointLight(0xffb45c, 800, 90, 1.35);
+  coronaFill.position.copy(SUN_POSITION);
+  scene.add(coronaFill);
 
-  const rimLight = new THREE.DirectionalLight(0x4e86ff, 0.9);
-  rimLight.position.set(-6, -3, -8);
-  scene.add(rimLight);
+  cameraFillLight = new THREE.PointLight(0xdceaff, 0.035, 120, 2);
+  camera.add(cameraFillLight);
+  scene.add(camera);
 }
 
 function enableCelestialShadows() {
   scene.traverse((node) => {
     if (!node.isMesh) return;
-    if (!node.geometry || !node.geometry.type.includes("Sphere")) return;
+    if (!node.userData.celestialBody) return;
+    const canonicalName =
+      BODY_INFO_ALIASES[node.userData.celestialName] ||
+      node.userData.celestialName;
+    if (!SOLAR_SYSTEM_SHADOW_BODY_NAMES.has(canonicalName)) return;
 
     node.castShadow = true;
     node.receiveShadow = true;
@@ -985,11 +1124,18 @@ function setupSun() {
 }
 
 function setupEarth() {
+  earthSpinGroup = new THREE.Group();
+  earthSpinGroup.position.copy(EARTH_POSITION);
+  earthSpinGroup.quaternion.copy(getSpinAxisQuaternion("地球"));
+  scene.add(earthSpinGroup);
+
   const earthGeometry = new THREE.SphereGeometry(EARTH_RADIUS, 128, 128);
   const earthMaterial = new THREE.MeshPhongMaterial({
     color: 0x4b74b6,
     shininess: 60,
-    specular: new THREE.Color(0x223044)
+    specular: new THREE.Color(0x223044),
+    emissive: new THREE.Color(0x06142c),
+    emissiveIntensity: 0.035
   });
   earthMaterial.onBeforeCompile = (shader) => {
     shader.uniforms.sunDir = { value: new THREE.Vector3().subVectors(SUN_POSITION, EARTH_POSITION).normalize() };
@@ -1019,7 +1165,7 @@ function setupEarth() {
          gl_FragColor.rgb += terminatorTint * term * fres * 0.45;
          // Slight night-side desaturation (no city lights texture available).
          float night = smoothstep(0.1, -0.05, lambert);
-         gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * 0.35 + vec3(0.01, 0.02, 0.05), night);`
+         gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * 0.56 + vec3(0.025, 0.045, 0.095), night);`
       );
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -1038,7 +1184,9 @@ function setupEarth() {
   };
 
   earthMesh = new THREE.Mesh(earthGeometry, earthMaterial);
-  scene.add(earthMesh);
+  earthMesh.userData.celestialBody = true;
+  earthMesh.userData.celestialName = "地球";
+  earthSpinGroup.add(earthMesh);
 
   // Cloud layer: normal blending + slight offset shell so clouds cast a
   // soft self-shadow on the globe instead of just brightening it.
@@ -1046,13 +1194,15 @@ function setupEarth() {
   const cloudMaterial = new THREE.MeshPhongMaterial({
     color: 0xffffff,
     transparent: true,
-    opacity: 0.85,
+    opacity: 0.62,
     depthWrite: false,
     alphaTest: 0.02
   });
 
   cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
-  scene.add(cloudMesh);
+  cloudMesh.castShadow = false;
+  cloudMesh.receiveShadow = false;
+  earthSpinGroup.add(cloudMesh);
 
   // Atmosphere: simplified Rayleigh-ish backside shell with sun-aware tint.
   const atmosphereGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.14, 64, 64);
@@ -1096,23 +1246,32 @@ function setupEarth() {
   });
 
   atmosphereMesh = new THREE.Mesh(atmosphereGeometry, atmosphereMaterial);
-  scene.add(atmosphereMesh);
+  atmosphereMesh.castShadow = false;
+  atmosphereMesh.receiveShadow = false;
+  earthSpinGroup.add(atmosphereMesh);
 }
 
 function setupViewpointBodies() {
   viewpointBodies = VIEWPOINT_BODY_DEFS.map((definition) => {
     const group = new THREE.Group();
     group.position.copy(definition.position);
+    const spinGroup = new THREE.Group();
+    spinGroup.quaternion.copy(getSpinAxisQuaternion(definition.name));
+    group.add(spinGroup);
 
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(definition.radius, 48, 48),
-      new THREE.MeshPhongMaterial({
+      new THREE.MeshStandardMaterial({
         map: createBodyTexture(definition.textureType),
-        shininess: 12,
-        specular: new THREE.Color(0x1c2338)
+        roughness: 0.82,
+        metalness: 0,
+        emissive: new THREE.Color(0x02050f),
+        emissiveIntensity: 0.025
       })
     );
-    group.add(mesh);
+    mesh.userData.celestialBody = true;
+    mesh.userData.celestialName = definition.name;
+    spinGroup.add(mesh);
 
     let ring = null;
     if (definition.ring) {
@@ -1130,6 +1289,7 @@ function setupViewpointBodies() {
     return {
       ...definition,
       group,
+      spinGroup,
       mesh,
       ring
     };
@@ -1762,16 +1922,20 @@ function createRing(definition) {
     definition.ring.outerRadius,
     128
   );
-  const material = new THREE.MeshBasicMaterial({
+  const material = new THREE.MeshStandardMaterial({
     map: ringTexture,
     transparent: true,
     opacity: 0.86,
     side: THREE.DoubleSide,
+    roughness: 0.72,
+    metalness: 0,
     depthWrite: false
   });
   const ring = new THREE.Mesh(geometry, material);
   ring.rotation.x = definition.ring.tiltX;
   ring.rotation.y = definition.ring.tiltY;
+  ring.castShadow = false;
+  ring.receiveShadow = true;
   return ring;
 }
 
@@ -2207,7 +2371,7 @@ function createNebulaTexture(color) {
 }
 
 function setupControls() {
-  // OrbitControls keeps Earth centered while allowing free rotation and zoom.
+  // OrbitControls follows the active focus point: either a selected planet or Earth.
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.06;
@@ -2221,12 +2385,19 @@ function setupControls() {
   controls.target.set(0, 0, 0);
 
   controls.addEventListener("start", cancelCameraTransition);
+  updateViewModeButtons();
 }
 
 function setupEvents() {
   window.addEventListener("resize", onResize);
   randomButton.addEventListener("click", () => {
     randomizeCamera(false);
+  });
+  inspectButton.addEventListener("click", () => {
+    setViewMode(VIEW_MODES.INSPECT);
+  });
+  earthViewButton.addEventListener("click", () => {
+    setViewMode(VIEW_MODES.FROM_BODY);
   });
   menuButton.addEventListener("click", () => {
     setMenuOpen(!menuOpen);
@@ -2241,17 +2412,18 @@ function randomizeCamera(immediate) {
 }
 
 function moveCameraToBody(viewpointBody, immediate = false) {
-  const nextPosition = getCameraPositionFromBody(viewpointBody);
+  const nextFrame = getCameraFrameForBody(viewpointBody, activeViewMode);
 
-  updateViewpointLabel(viewpointBody.label || viewpointBody.name);
+  updateViewpointLabel(viewpointBody);
   updateHud(viewpointBody);
   currentHudBody = viewpointBody;
   lastHudRefreshAt = performance.now();
   currentViewpointName = viewpointBody.name;
+  applyControlLimits(viewpointBody);
 
   if (immediate) {
-    camera.position.copy(nextPosition);
-    controls.target.copy(EARTH_POSITION);
+    camera.position.copy(nextFrame.position);
+    controls.target.copy(nextFrame.target);
     controls.update();
     setMenuOpen(false);
     return;
@@ -2262,15 +2434,17 @@ function moveCameraToBody(viewpointBody, immediate = false) {
   cameraTransition = {
     startTime: performance.now(),
     from: camera.position.clone(),
-    to: nextPosition
+    to: nextFrame.position,
+    fromTarget: controls.target.clone(),
+    toTarget: nextFrame.target
   };
   setMenuOpen(false);
 }
 
 function pickRandomViewpointBody() {
-  const eligibleBodies = viewpointBodies.filter(
-    (body) => body.viewpointEligible !== false
-  );
+  const eligibleBodies = activeViewMode === VIEW_MODES.FROM_BODY
+    ? viewpointBodies.filter((body) => body.viewpointEligible !== false)
+    : viewpointBodies;
   const bodyCandidates = eligibleBodies.length > 0 ? eligibleBodies : viewpointBodies;
   const availableBodies = bodyCandidates.filter(
     (body) => body.name !== currentViewpointName
@@ -2281,8 +2455,49 @@ function pickRandomViewpointBody() {
   return selectedBody;
 }
 
+function getCameraFrameForBody(body, mode) {
+  if (mode === VIEW_MODES.FROM_BODY) {
+    return {
+      position: getCameraPositionFromBody(body),
+      target: EARTH_POSITION.clone()
+    };
+  }
+
+  return {
+    position: getInspectCameraPositionForBody(body),
+    target: body.position.clone()
+  };
+}
+
 function getCameraPositionFromBody(body) {
-  const toEarth = EARTH_POSITION.clone().sub(body.position).normalize();
+  const bodyToEarthVector = EARTH_POSITION.clone().sub(body.position);
+  const distanceToEarth = bodyToEarthVector.length();
+
+  if (distanceToEarth > 18) {
+    const fromEarthToBody = body.position.clone().sub(EARTH_POSITION).normalize();
+    let tangent = new THREE.Vector3().crossVectors(fromEarthToBody, new THREE.Vector3(0, 1, 0));
+    if (tangent.lengthSq() < 0.001) {
+      tangent = new THREE.Vector3(1, 0, 0);
+    }
+    tangent.normalize();
+
+    const localUp = new THREE.Vector3().crossVectors(tangent, fromEarthToBody).normalize();
+    const viewDistance = Math.min(
+      distanceToEarth - body.radius * 1.8,
+      Math.max(EARTH_RADIUS * 7.5, Math.min(distanceToEarth * 0.38, 44))
+    );
+
+    return EARTH_POSITION.clone()
+      .add(fromEarthToBody.multiplyScalar(Math.max(viewDistance, EARTH_RADIUS * 5.5)))
+      .add(tangent.multiplyScalar(EARTH_RADIUS * 1.05))
+      .add(localUp.multiplyScalar(EARTH_RADIUS * 0.52));
+  }
+
+  let toEarth = bodyToEarthVector;
+  if (toEarth.lengthSq() < 0.001) {
+    toEarth = new THREE.Vector3(0, 0.28, 1);
+  }
+  toEarth.normalize();
   const tangent = new THREE.Vector3().crossVectors(
     toEarth,
     Math.abs(toEarth.y) > 0.94
@@ -2303,8 +2518,74 @@ function getCameraPositionFromBody(body) {
   return body.position.clone().add(offset).add(sideways).add(vertical);
 }
 
-function updateViewpointLabel(name) {
-  viewpointLabel.textContent = `視角來源：${name}`;
+function getInspectCameraPositionForBody(body) {
+  const target = body.position.clone();
+  let sunward = SUN_POSITION.clone().sub(target);
+
+  if (sunward.lengthSq() < 0.001) {
+    sunward = camera.position.clone().sub(target);
+  }
+
+  sunward.normalize();
+
+  let tangent = new THREE.Vector3().crossVectors(sunward, new THREE.Vector3(0, 1, 0));
+  if (tangent.lengthSq() < 0.001) {
+    tangent = new THREE.Vector3(1, 0, 0);
+  }
+  tangent.normalize();
+
+  const localUp = new THREE.Vector3().crossVectors(tangent, sunward).normalize();
+  const ringBoost = body.ring ? 2.1 : 1;
+  const distance = Math.max(body.radius * 4.9 * ringBoost, 5.5);
+  const side = tangent.multiplyScalar(body.radius * 0.38);
+  const lift = localUp.multiplyScalar(body.radius * 0.34);
+
+  return target.clone()
+    .add(sunward.multiplyScalar(distance))
+    .add(side)
+    .add(lift);
+}
+
+function applyControlLimits(body) {
+  if (!controls) return;
+
+  if (activeViewMode === VIEW_MODES.INSPECT) {
+    const ringBoost = body.ring ? 2.2 : 1;
+    controls.minDistance = Math.max(body.radius * 1.35 * ringBoost, 1.8);
+    controls.maxDistance = Math.max(body.radius * 18 * ringBoost, 42);
+    return;
+  }
+
+  controls.minDistance = 3.4;
+  controls.maxDistance = 600;
+}
+
+function updateViewpointLabel(body) {
+  const name = body.label || body.name;
+  viewpointLabel.textContent = activeViewMode === VIEW_MODES.INSPECT
+    ? `正在看：${name}`
+    : `從 ${name} 看地球`;
+}
+
+function setViewMode(nextMode) {
+  if (activeViewMode === nextMode) {
+    return;
+  }
+
+  activeViewMode = nextMode;
+  updateViewModeButtons();
+
+  if (currentHudBody) {
+    moveCameraToBody(currentHudBody, false);
+  }
+}
+
+function updateViewModeButtons() {
+  const inspectActive = activeViewMode === VIEW_MODES.INSPECT;
+  inspectButton.classList.toggle("is-active", inspectActive);
+  earthViewButton.classList.toggle("is-active", !inspectActive);
+  inspectButton.setAttribute("aria-pressed", String(inspectActive));
+  earthViewButton.setAttribute("aria-pressed", String(!inspectActive));
 }
 
 function getHudBodyTitle(body) {
@@ -2320,14 +2601,18 @@ function getHudBodyTitle(body) {
 function updateHud(body) {
   const info = getBodyInfo(body.name);
   const hudTitle = getHudBodyTitle(body);
+  const modeLabel = activeViewMode === VIEW_MODES.INSPECT
+    ? "近距離觀看"
+    : "從這裡回望地球";
 
   hudLabel.textContent = hudTitle;
-  hudDesc.textContent = `${info.type} · ${info.summary}`;
+  hudDesc.textContent = `${modeLabel} · ${info.type} · ${info.summary}`;
   hudInfo.style.display = "";
   hudComposition.textContent = info.composition;
   hudGravity.textContent = info.gravity;
   hudTimeConversion.textContent = buildTimeConversionText(
     hudTitle,
+    body.name,
     info
   );
   hudFact.textContent = info.fact;
@@ -2440,10 +2725,10 @@ function buildBodyMeta(body) {
   }
 
   if (body.viewpointEligible === false) {
-    return "僅場景展示";
+    return "可觀看星球";
   }
 
-  return "可直接跳轉";
+  return "可觀看或回望地球";
 }
 
 function setMenuOpen(nextState) {
@@ -2488,7 +2773,11 @@ function updateCameraTransition(now) {
     cameraTransition.to,
     easedProgress
   );
-  controls.target.copy(EARTH_POSITION);
+  controls.target.lerpVectors(
+    cameraTransition.fromTarget,
+    cameraTransition.toTarget,
+    easedProgress
+  );
 
   if (progress >= 1) {
     cameraTransition = null;
@@ -2531,7 +2820,7 @@ async function loadEarthTextures() {
     cloudMesh.material.map = cloudTex;
     cloudMesh.material.alphaMap = cloudTex;
     cloudMesh.material.transparent = true;
-    cloudMesh.material.opacity = 0.92;
+    cloudMesh.material.opacity = 0.62;
     cloudMesh.material.needsUpdate = true;
   }
 
@@ -2583,6 +2872,7 @@ function animate(now = performance.now()) {
 
   const delta = clock.getDelta();
   const elapsed = clock.elapsedTime;
+  const realtimeNowMs = Date.now();
 
   updateCameraTransition(now);
 
@@ -2591,12 +2881,11 @@ function animate(now = performance.now()) {
     lastHudRefreshAt = now;
   }
 
-  // Keep Earth slowly rotating so the scene feels alive.
-  earthMesh.rotation.y += delta * 0.085;
-  cloudMesh.rotation.y += delta * 0.1;
-  atmosphereMesh.rotation.y += delta * 0.02;
-  sunMesh.rotation.y += delta * 0.024;
-  sunGroup.rotation.z += delta * 0.01;
+  applyRealTimeBodyRotation(earthMesh, "地球", realtimeNowMs);
+  cloudMesh.rotation.y =
+    earthMesh.rotation.y + getRealTimeRotationAngle(24 * 10, realtimeNowMs);
+  atmosphereMesh.rotation.y = earthMesh.rotation.y;
+  applyRealTimeBodyRotation(sunMesh, "太陽", realtimeNowMs);
 
   if (sunMesh.material.uniforms && sunMesh.material.uniforms.time) {
     sunMesh.material.uniforms.time.value = elapsed;
@@ -2636,12 +2925,19 @@ function animate(now = performance.now()) {
     starLayers[2].rotation.x = Math.cos(elapsed * 0.03) * 0.08;
   }
 
-  viewpointBodies.forEach((body, index) => {
-    body.mesh.rotation.y += delta * body.rotationSpeed;
-    body.mesh.rotation.x = Math.sin(elapsed * 0.18 + index) * 0.04;
+  viewpointBodies.forEach((body) => {
+    const hasRealRotation = applyRealTimeBodyRotation(
+      body.mesh,
+      body.name,
+      realtimeNowMs
+    );
+
+    if (!hasRealRotation) {
+      body.mesh.rotation.y += delta * body.rotationSpeed;
+    }
 
     if (body.ring) {
-      body.ring.rotation.z += delta * 0.02;
+      body.ring.rotation.z += delta * 0.004;
     }
   });
 

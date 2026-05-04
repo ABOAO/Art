@@ -1,7 +1,6 @@
-// Click anywhere to drop a spider. Each spider continuously weaves new
-// threads, animating each strand as it grows from a known node toward a
-// random distant target. Threads sag under gravity, catch light, and
-// collect dew drops at their anchor nodes.
+// Click anywhere to plant a weaving origin. Each invisible agent continuously
+// grows new threads from known nodes toward random distant targets. Threads
+// sag under gravity, catch light, and collect dew drops at their anchor nodes.
 
 let spiders = [];
 let allNodes = [];
@@ -26,7 +25,7 @@ function setup() {
 }
 
 function draw() {
-  // Composite: paper background -> accumulated silk -> live spiders/dew.
+  // Composite: paper background -> accumulated silk -> live dew drops.
   image(bgLayer, 0, 0, width, height);
   image(silkLayer, 0, 0, width, height);
 
@@ -34,9 +33,8 @@ function draw() {
     for (const s of spiders) s.tick();
   }
 
-  // Dew drops and spider bodies are redrawn each frame so they glisten.
+  // Dew drops are redrawn each frame so they glisten.
   for (const n of allNodes) drawDew(n);
-  for (const s of spiders) s.render();
 }
 
 function setupUI() {
@@ -285,7 +283,7 @@ class Spider {
   }
 
   render() {
-    drawSpiderBody(this.pos.x, this.pos.y, this.bodyAngle);
+    // The weaving agent is intentionally invisible; only the silk and dew render.
   }
 
   startTone() {

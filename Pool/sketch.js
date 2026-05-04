@@ -15,6 +15,7 @@ let windTimer = 0;
 
 const fishingState = {
   pointerDown: false,
+  pointerId: null,
   active: false,
   x: 0,
   y: 0,
@@ -88,6 +89,18 @@ function clamp(value, min, max) {
 function lerpAngle(start, end, amount) {
   const delta = (end - start + Math.PI * 3) % (Math.PI * 2) - Math.PI;
   return start + delta * amount;
+}
+
+function easeOutCubic(value) {
+  return 1 - Math.pow(1 - value, 3);
+}
+
+function quadBezier(x0, y0, x1, y1, x2, y2, amount) {
+  const u = 1 - amount;
+  return {
+    x: u * u * x0 + 2 * u * amount * x1 + amount * amount * x2,
+    y: u * u * y0 + 2 * u * amount * y1 + amount * amount * y2
+  };
 }
 
 function fishCount() {
@@ -763,6 +776,16 @@ class Koi {
     this.trailTimer = 0;
     this.fishingInterested = 0;
     this.nibblePhase = rand(0, Math.PI * 2);
+    this.catchState = "free";
+    this.catchProgress = 0;
+    this.catchAge = 0;
+    this.catchDuration = 1.35;
+    this.hookX = this.x;
+    this.hookY = this.y;
+    this.catchStart = { x: this.x, y: this.y };
+    this.catchControl = { x: this.x, y: this.y };
+    this.catchEnd = { x: this.x, y: this.y };
+    this.baseDepth = this.depth;
     this.setTarget(true);
   }
 
@@ -785,6 +808,7 @@ class Koi {
   }
 
   moveTowardPoint(px, py, weight = 1) {
+    if (this.catchState !== "free") return;
     this.targetX = clamp(px + rand(-18, 18), 50, width - 50);
     this.targetY = clamp(py + rand(-14, 14), height * 0.56, height * 0.94);
     this.wander = Math.max(this.wander, 0.4 + weight * 0.8);
@@ -795,6 +819,8 @@ class Koi {
   }
 
   reactToRipple(x, y) {
+    if (this.catchState !== "free") return;
+
     const dx = this.x - x;
     const dy = this.y - y;
     const distance = Math.hypot(dx, dy);
@@ -808,7 +834,114 @@ class Koi {
     this.wander = rand(1, 1.8);
   }
 
+  hookAt(x, y) {
+    this.catchState = "hooked";
+    this.catchProgress = 0;
+    this.catchAge = 0;
+    this.baseDepth = this.depth;
+    this.hookX = x;
+    this.hookY = y;
+    this.trail.length = 0;
+  }
+
+  pullTowardHook(x, y, dt) {
+    if (this.catchState !== "hooked") return;
+
+    this.hookX = x;
+    this.hookY = y;
+
+    const liftAmount = clamp((height * 0.72 - y) / Math.max(height * 0.38, 1), 0, 1);
+    const wobble = Math.sin(time * 12 + this.nibblePhase) * (3 + liftAmount * 5);
+    const targetX = x + wobble;
+    const targetY = y + 22 - liftAmount * 18;
+    const follow = clamp(dt * (7 + liftAmount * 6), 0, 0.62);
+    const dx = targetX - this.x;
+    const dy = targetY - this.y;
+
+    this.x += dx * follow;
+    this.y += dy * follow;
+    this.depth = clamp(this.baseDepth - liftAmount * 0.5, 0.48, 1.15);
+    this.angle = lerpAngle(this.angle, Math.atan2(dy, dx), dt * 8);
+    this.tailPhase += dt * (9 + liftAmount * 8);
+    this.catchProgress = liftAmount;
+  }
+
+  landFromHook(x, y) {
+    this.catchState = "landing";
+    this.catchAge = 0;
+    this.catchProgress = 0;
+    this.catchDuration = 1.05 + Math.random() * 0.25;
+    this.catchStart = { x: this.x, y: this.y };
+    this.catchControl = {
+      x: (this.x + x) * 0.5 + rand(-34, 34),
+      y: Math.min(this.y, y) - rand(90, 150)
+    };
+    this.catchEnd = {
+      x: clamp(x + rand(-42, 42), 60, width - 60),
+      y: -this.length * 0.92
+    };
+    this.hookX = x;
+    this.hookY = y;
+    this.trail.length = 0;
+  }
+
+  releaseHook() {
+    if (this.catchState !== "hooked") return;
+    this.catchState = "free";
+    this.depth = clamp(this.baseDepth, 0.72, 1.2);
+    this.setTarget();
+  }
+
+  updateLanding(dt) {
+    this.catchAge += dt;
+    const progress = clamp(this.catchAge / this.catchDuration, 0, 1);
+    const eased = easeOutCubic(progress);
+    const pt = quadBezier(
+      this.catchStart.x,
+      this.catchStart.y,
+      this.catchControl.x,
+      this.catchControl.y,
+      this.catchEnd.x,
+      this.catchEnd.y,
+      eased
+    );
+
+    this.x = pt.x;
+    this.y = pt.y;
+    this.depth = clamp(0.48 + (1 - eased) * 0.18, 0.48, 0.72);
+    this.angle = lerpAngle(this.angle, -Math.PI / 2 + Math.sin(time * 9) * 0.14, dt * 8);
+    this.tailPhase += dt * 18;
+    this.catchProgress = eased;
+
+    if (progress >= 1) {
+      this.respawnAfterCatch();
+    }
+  }
+
+  respawnAfterCatch() {
+    this.catchState = "free";
+    this.catchProgress = 0;
+    this.depth = rand(0.72, 1.2);
+    this.baseDepth = this.depth;
+    this.x = rand(40, width - 40);
+    this.y = height + rand(70, 150);
+    this.angle = -Math.PI / 2 + rand(-0.45, 0.45);
+    this.trail.length = 0;
+    this.trailTimer = 0;
+    this.setTarget(true);
+  }
+
   update(dt) {
+    if (this.catchState === "hooked") {
+      this.tailPhase += dt * 7;
+      return;
+    }
+
+    if (this.catchState === "landing") {
+      this.updateLanding(dt);
+      return;
+    }
+
     this.wander -= dt;
 
     const dx = this.targetX - this.x;
@@ -1149,34 +1282,41 @@ class Koi {
     const length = this.length;
     const halfWidth = this.bodyWidth;
     const tailSwing = Math.sin(this.tailPhase) * halfWidth * 0.48;
-    const blur = (1.2 - this.depth) * 0.75;
+    const isLifted = this.catchState !== "free";
+    const blur = isLifted ? 0 : (1.2 - this.depth) * 0.75;
+    const liftScale = isLifted ? 1 + this.catchProgress * 0.08 : 1;
 
     // Wake trail
-    this.drawWake();
+    if (!isLifted) {
+      this.drawWake();
+    }
 
     // Cast shadow on the pond floor — larger offset and softer blur so it
     // reads as a silhouette projected by overhead light through the water.
-    const shadowOffset = 22 * this.depth;
-    const shadowScale = 1.08 + this.depth * 0.05;
-    ctx.save();
-    ctx.translate(this.x + shadowOffset * 0.6, this.y + shadowOffset);
-    ctx.rotate(this.angle);
-    ctx.scale(shadowScale, shadowScale * 0.82);
-    ctx.globalAlpha = 0.22 * this.depth;
-    ctx.fillStyle = "rgba(2, 9, 14, 0.9)";
-    ctx.filter = `blur(${8 + this.depth * 3}px)`;
-    this.traceTail(tailSwing);
-    ctx.fill();
-    this.traceBody();
-    ctx.fill();
-    ctx.restore();
+    if (!isLifted) {
+      const shadowOffset = 22 * this.depth;
+      const shadowScale = 1.08 + this.depth * 0.05;
+      ctx.save();
+      ctx.translate(this.x + shadowOffset * 0.6, this.y + shadowOffset);
+      ctx.rotate(this.angle);
+      ctx.scale(shadowScale, shadowScale * 0.82);
+      ctx.globalAlpha = 0.22 * this.depth;
+      ctx.fillStyle = "rgba(2, 9, 14, 0.9)";
+      ctx.filter = `blur(${8 + this.depth * 3}px)`;
+      this.traceTail(tailSwing);
+      ctx.fill();
+      this.traceBody();
+      ctx.fill();
+      ctx.restore();
+    }
 
     // Body
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle);
+    ctx.scale(liftScale, liftScale);
     ctx.filter = blur > 0 ? `blur(${blur}px)` : "none";
-    ctx.globalAlpha = 0.7 + this.depth * 0.18;
+    ctx.globalAlpha = isLifted ? 0.98 : 0.7 + this.depth * 0.18;
 
     this.drawFins(tailSwing);
 
@@ -1555,6 +1695,15 @@ function updateFishing(dt) {
   const koi = fish[fishingState.fishIndex];
   if (!koi) return;
 
+  if (fishingState.fishLatched) {
+    if (koi.catchState !== "hooked") {
+      koi.hookAt(fishingState.x, fishingState.y);
+    }
+    koi.pullTowardHook(fishingState.x, fishingState.y, dt);
+    fishingState.tension = Math.max(0.25, fishingState.tension - dt * 0.22);
+    return;
+  }
+
   koi.moveTowardPoint(fishingState.x, fishingState.y, 1);
   const dist = koi.distanceTo(fishingState.x, fishingState.y);
 
@@ -1567,12 +1716,9 @@ function updateFishing(dt) {
     if (fishingState.nibbleCount >= 2 + Math.floor(Math.random() * 2) && dist < Math.max(48, koi.length * 0.25)) {
       fishingState.fishLatched = true;
       fishingState.tension = 1;
+      koi.hookAt(fishingState.x, fishingState.y);
       addRipple(fishingState.x, fishingState.y, 1.2);
     }
-  }
-
-  if (fishingState.fishLatched) {
-    fishingState.tension = Math.max(0, fishingState.tension - dt * 0.4);
   }
 }
 
@@ -1580,6 +1726,7 @@ function findClosestFishIndex(x, y) {
   let best = -1;
   let bestDist = Infinity;
   for (let i = 0; i < fish.length; i++) {
+    if (fish[i].catchState !== "free") continue;
     const d = fish[i].distanceTo(x, y);
     if (d < bestDist) {
       bestDist = d;
@@ -1589,8 +1736,21 @@ function findClosestFishIndex(x, y) {
   return best;
 }
 
-function endFishing() {
+function finishFishing({ landCatch = false } = {}) {
+  const koi = fish[fishingState.fishIndex];
+  if (koi && fishingState.fishLatched) {
+    if (landCatch) {
+      koi.landFromHook(fishingState.x, fishingState.y);
+      addRipple(koi.x, koi.y, 1.4);
+      addRipple(fishingState.x, fishingState.y, 0.8);
+    } else {
+      koi.releaseHook();
+      addRipple(koi.x, koi.y, 0.7);
+    }
+  }
+
   fishingState.pointerDown = false;
+  fishingState.pointerId = null;
   fishingState.active = false;
   fishingState.holdTime = 0;
   fishingState.nibbleTimer = 0;
@@ -1664,11 +1824,16 @@ function render() {
 
   fish.sort((a, b) => a.depth - b.depth || a.y - b.y);
   for (const koi of fish) {
+    if (koi.catchState !== "free") continue;
     koi.draw();
   }
 
   drawFrontWaterVeil();
   drawSurfaceDistortion();
+  for (const koi of fish) {
+    if (koi.catchState === "free") continue;
+    koi.draw();
+  }
   drawWindRipples();
   drawLilyPads();
   drawRipplesAndDrops();
@@ -1684,11 +1849,48 @@ function drawFishingUI() {
   if (!fishingState.pointerDown) return;
   ctx.save();
   const glow = fishingState.fishLatched ? 0.65 : 0.25 + Math.min(0.35, fishingState.holdTime);
+
+  ctx.lineCap = "round";
+  ctx.strokeStyle = `rgba(236, 250, 255, ${Math.max(0.18, glow * 0.72)})`;
+  ctx.lineWidth = fishingState.fishLatched ? 1.5 : 0.9;
+  ctx.beginPath();
+  ctx.moveTo(fishingState.x, -18);
+  ctx.quadraticCurveTo(
+    fishingState.x + Math.sin(time * 1.4) * 22,
+    fishingState.y * 0.34,
+    fishingState.x,
+    fishingState.y
+  );
+  ctx.stroke();
+
+  const hookedKoi = fish[fishingState.fishIndex];
+  if (fishingState.fishLatched && hookedKoi) {
+    ctx.strokeStyle = "rgba(255, 252, 230, 0.72)";
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.moveTo(fishingState.x, fishingState.y);
+    ctx.quadraticCurveTo(
+      (fishingState.x + hookedKoi.x) * 0.5,
+      Math.min(fishingState.y, hookedKoi.y) - 24,
+      hookedKoi.x,
+      hookedKoi.y
+    );
+    ctx.stroke();
+  }
+
   ctx.strokeStyle = `rgba(236, 250, 255, ${glow})`;
   ctx.lineWidth = fishingState.fishLatched ? 2.2 : 1.2;
   ctx.beginPath();
   ctx.arc(fishingState.x, fishingState.y, fishingState.fishLatched ? 18 : 12, 0, Math.PI * 2);
   ctx.stroke();
+
+  if (fishingState.active && !fishingState.fishLatched) {
+    ctx.fillStyle = `rgba(236, 250, 255, ${0.26 + Math.sin(time * 8) * 0.08})`;
+    ctx.beginPath();
+    ctx.arc(fishingState.x, fishingState.y, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   ctx.restore();
 }
 
@@ -1704,31 +1906,46 @@ function frame(now) {
 }
 
 canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
   const rect = canvas.getBoundingClientRect();
   fishingState.x = event.clientX - rect.left;
   fishingState.y = event.clientY - rect.top;
   fishingState.pointerDown = true;
+  fishingState.pointerId = event.pointerId;
   fishingState.holdTime = 0;
+  fishingState.active = false;
+  fishingState.fishLatched = false;
   addRipple(fishingState.x, fishingState.y, 0.8);
+
+  if (canvas.setPointerCapture) {
+    canvas.setPointerCapture(event.pointerId);
+  }
 });
 
 canvas.addEventListener("pointermove", (event) => {
   if (!fishingState.pointerDown) return;
+  if (fishingState.pointerId !== null && event.pointerId !== fishingState.pointerId) return;
+  event.preventDefault();
   const rect = canvas.getBoundingClientRect();
   fishingState.x = event.clientX - rect.left;
   fishingState.y = event.clientY - rect.top;
 });
 
-canvas.addEventListener("pointerup", () => {
-  endFishing();
+canvas.addEventListener("pointerup", (event) => {
+  if (fishingState.pointerId !== null && event.pointerId !== fishingState.pointerId) return;
+  finishFishing({ landCatch: true });
+  if (canvas.releasePointerCapture) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
 });
 
 canvas.addEventListener("pointercancel", () => {
-  endFishing();
+  finishFishing({ landCatch: false });
 });
 
 canvas.addEventListener("pointerleave", () => {
-  endFishing();
+  if (!fishingState.pointerDown) return;
+  finishFishing({ landCatch: fishingState.fishLatched });
 });
 
 window.addEventListener("resize", resize);
